@@ -1,0 +1,51 @@
+# Square-domain baseline at 32x32 (dissertation Section 5.1, Figure 8).
+# Reproduces the cell s=s'=32 of Table 1 (relative L2 ~ 0.411) when
+# ported correctly.
+
+name: square_32
+output_dir: runs/square_32
+
+pde:
+  fine_grid: 311
+  coarse_grid: 32
+  reynolds: 10.0
+  char_length: 0.2
+  viscosity: 1.0
+  domain: square       # phi = 0, psi = 1 (identity transform)
+  eps_1: 0.0
+  eps_2: 0.0
+
+data:
+  num_train_solutions: 1000
+  num_test_solutions: 200
+  train_csv: runs/square_32/train.csv
+  test_csv:  runs/square_32/test.csv
+  include_finv_column: false
+  batch_size: 32
+  num_workers: 0
+  seed: 2203_2025
+
+model:
+  in_channels: 4        # (x, y, b1, b2)
+  out_channels: 1
+  modes: 12
+  width: 128
+  depth: 4
+  projection_hidden: 128
+  activation: gelu
+
+train:
+  epochs: 100
+  lr: 0.001
+  weight_decay: 0.0
+  loss: relative_l2     # dissertation eq. 11; override 'mse' if matching legacy
+  scheduler: none
+  checkpoint_path: runs/square_32/fno2d.pth
+  device: auto
+  deterministic: false
+
+eval:
+  checkpoint_path: runs/square_32/fno2d.pth
+  output_dir: runs/square_32/eval
+  test_resolutions: [16, 32, 63]
+  num_plot_samples: 3
