@@ -1,29 +1,30 @@
-"""PyTorch Dataset / DataLoader for the committor CSVs.
+"""PyTorch Dataset for the committor training CSVs.
 
-The legacy `PDEOperatorDataset` in `Neural_operator/FNO_1.py` groups by
-`solution_id`, extracts `[x, y, b1, b2]` and the target `rho`, then
-reshapes into `(4, G, G)` and `(G, G)` tensors. Reproduce that here,
-but with:
+Each CSV row is a single coarse-grid sample (x, y, b1, b2, rho[, finv])
+tagged by solution_id. The Dataset groups by solution_id once in
+__init__ and yields, per sample:
 
-    * explicit `grid_size` validated against row count per group,
-    * optional `f^{-1}` column for the curved-domain experiment,
-    * pre-computed grouping (load once, index many times) to avoid
-      the pandas groupby overhead on every `__getitem__`.
+    input:  (C, G, G) float32 tensor
+            C = 4 (x, y, b1, b2) for square domains
+            C = 5 (..., finv)    for curved domains
+    target: (1, G, G) float32 tensor  (rho_react on the coarse grid)
 
-TODO: port from Neural_operator/FNO_1.py `PDEOperatorDataset` +
-`load_data`, keeping the FNO-friendly tensor layout [C, H, W].
+The channels-first layout matches the FNO2D convention used by the
+legacy `FNO_1.py` and by typical torch spectral-conv implementations.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 
 class CommittorDataset(Dataset):
-    """Each item: (input_fields[C, G, G], target_rho[G, G])."""
+    """Reads a committor CSV once, caches the per-solution tensors."""
 
     def __init__(
         self,
@@ -33,18 +34,61 @@ class CommittorDataset(Dataset):
         include_finv: bool = False,
     ) -> None:
         self.csv_path = Path(csv_path)
-        self.grid_size = grid_size
-        self.include_finv = include_finv
-        raise NotImplementedError(
-            "TODO: port from Neural_operator/FNO_1.py PDEOperatorDataset. "
-            "Load CSV once, group by solution_id, cache tensors."
-        )
+        self.grid_size = int(grid_size)
+        self.include_finv = bool(include_finv)
+
+        if not self.csv_path.exists():
+            raise FileNotFoundError(f"CSV not found: {self.csv_path}")
+
+        df = pd.read_csv(self.csv_path)
+        required = {"solution_id", "x", "y", "b1", "b2", "rho"}
+        missing = required - set(df.columns)
+        if missing:
+            raise ValueError(f"CSV {self.csv_path} missing columns: {sorted(missing)}")
+        if self.include_finv and "finv" not in df.columns:
+            raise ValueError(
+                f"include_finv=True but CSV {self.csv_path} has no 'finv' column."
+            )
+
+        # Cache everything up-front. For the target dataset sizes
+        # (~5000 solutions * 32^2 cells = 5.12M rows, ~5-6 floats each)
+        # this is well under a GB and saves the groupby overhead per
+        # __getitem__ call.
+        expected = self.grid_size * self.grid_size
+        groups = list(df.groupby("solution_id", sort=True))
+
+        self._inputs: list[torch.Tensor] = []
+        self._targets: list[torch.Tensor] = []
+        for sid, group in groups:
+            if len(group) != expected:
+                raise ValueError(
+                    f"solution_id={sid} has {len(group)} rows, expected {expected} "
+                    f"for grid_size={self.grid_size}. CSV {self.csv_path} may be "
+                    f"from a different coarse_grid."
+                )
+
+            # Ensure a deterministic (x, y) ordering matching the generator's
+            # meshgrid(indexing='ij'): rows ordered by (x ascending, y ascending).
+            group = group.sort_values(["x", "y"], kind="mergesort").reset_index(drop=True)
+            G = self.grid_size
+
+            def reshape(col: str) -> np.ndarray:
+                return group[col].to_numpy(dtype=np.float32).reshape(G, G)
+
+            channels = [reshape("x"), reshape("y"), reshape("b1"), reshape("b2")]
+            if self.include_finv:
+                channels.append(reshape("finv"))
+            inp = np.stack(channels, axis=0)  # (C, G, G)
+            tgt = reshape("rho")[None, :, :]  # (1, G, G)
+
+            self._inputs.append(torch.from_numpy(inp))
+            self._targets.append(torch.from_numpy(tgt))
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return len(self._inputs)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
+        return self._inputs[idx], self._targets[idx]
 
 
 def make_dataloader(

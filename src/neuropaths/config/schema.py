@@ -54,6 +54,17 @@ class PDEConfig:
     eps_1: float = 0.0
     eps_2: float = 0.0
 
+    # Velocity-field Fourier-mode cap. Notes chapter §2.4 introduces this
+    # as the "laminar vs turbulent" knob: k_max=8 laminar, 16 turbulent.
+    # Interpreted as |k| <= velocity_kmax * (2 pi / L_domain), i.e. the
+    # top-end of the scaling band in Algorithm 2 step 3. The legacy code
+    # hardcodes `kfmax = 30 * kfmin` regardless; this field replaces it.
+    velocity_kmax: int = 8
+
+    # Bottom of the same scaling band. Dissertation uses the domain
+    # fundamental (kfmin = 2 pi / L_domain => velocity_kmin=1).
+    velocity_kmin: int = 1
+
 
 @dataclass
 class DataConfig:
