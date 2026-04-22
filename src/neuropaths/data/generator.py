@@ -21,6 +21,9 @@ once dataset sizes exceed a few GB.
 
 from __future__ import annotations
 
+import multiprocessing as mp
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import autograd.numpy as anp
@@ -56,29 +59,128 @@ def _subsample_indices(n_fine: int, n_coarse: int) -> np.ndarray:
     return np.linspace(0, n_fine - 1, n_coarse, dtype=int)
 
 
+@dataclass(frozen=True)
+class _SolutionJob:
+    """Pickle-friendly per-solution payload for multiprocessing workers.
+
+    Carries only plain data — configs are frozen dataclasses; SeedSequence
+    is picklable. Every closure (boundaries, velocity field, solvers)
+    is built *inside* the worker, not passed across the pool boundary.
+    """
+
+    sid: int
+    pde_cfg: PDEConfig
+    data_cfg: DataConfig
+    seed_seq: np.random.SeedSequence
+
+
+def _generate_one_solution(job: _SolutionJob) -> tuple[int, list[list[float]]]:
+    """Run the full per-solution pipeline and return its coarse-grid rows.
+
+    Returns ``(sid, rows)`` so that the orchestrator can re-sort the
+    results — ``pool.imap_unordered`` yields in arbitrary order and we
+    still want a byte-identical CSV for a given config + seed, whether
+    the run used 1 worker or 168.
+    """
+    pde_cfg = job.pde_cfg
+    data_cfg = job.data_cfg
+    rng = np.random.default_rng(job.seed_seq)
+
+    fine_grid = pde_cfg.fine_grid
+    coarse_grid = pde_cfg.coarse_grid
+    n_interior = fine_grid - 2
+    coarse_idx = _subsample_indices(fine_grid, coarse_grid)
+
+    # 1. Boundaries.
+    phi, psi = generate_boundary_pair(
+        rng,
+        kind=pde_cfg.domain,
+        n_max=pde_cfg.boundary_n_max,
+        eps=pde_cfg.boundary_eps,
+    )
+
+    # 2. Velocity field.
+    field = turbulent_velocity_field(
+        reynolds=pde_cfg.reynolds,
+        char_length=pde_cfg.char_length,
+        viscosity=pde_cfg.viscosity,
+        k_min=pde_cfg.velocity_kmin,
+        k_max=pde_cfg.velocity_kmax,
+        eps_1=pde_cfg.eps_1,
+        eps_2=pde_cfg.eps_2,
+        n_grid=fine_grid,
+        rng=rng,
+    )
+    bx = field.bx
+    by = field.by
+
+    # 3. Solve committor PDEs.
+    q_plus, X, Y = solve_forward_committor(phi, psi, bx, by, n_interior)
+    q_minus, _, _ = solve_backward_committor(phi, psi, bx, by, n_interior)
+
+    # 4. Reactive density.
+    omega = 1.0 if pde_cfg.domain == "square" else _domain_area(phi, psi)
+    rho = reactive_density(q_plus, q_minus, domain_area=omega)
+
+    # 5. Subsample.
+    ii, jj = np.meshgrid(coarse_idx, coarse_idx, indexing="ij")
+    x_c = np.asarray(X)[ii, jj]
+    y_c = np.asarray(Y)[ii, jj]
+    rho_c = rho[ii, jj]
+
+    # 6. b on the coarse grid in original coordinates.
+    if pde_cfg.domain == "square":
+        bx_c = bx(x_c, y_c)
+        by_c = by(x_c, y_c)
+    else:
+        f_inv = inverse_map(phi, psi)
+        xprime = np.asarray(f_inv(anp.asarray(x_c), anp.asarray(y_c)))
+        bx_c = bx(xprime, y_c)
+        by_c = by(xprime, y_c)
+
+    finv_c = None
+    if data_cfg.include_finv_column:
+        f_inv = inverse_map(phi, psi)
+        finv_c = np.asarray(f_inv(anp.asarray(x_c), anp.asarray(y_c)))
+
+    rows: list[list[float]] = []
+    for i in range(coarse_grid):
+        for j in range(coarse_grid):
+            row = [
+                float(job.sid),
+                float(x_c[i, j]),
+                float(y_c[i, j]),
+                float(bx_c[i, j]),
+                float(by_c[i, j]),
+                float(rho_c[i, j]),
+            ]
+            if finv_c is not None:
+                row.append(float(finv_c[i, j]))
+            rows.append(row)
+
+    return job.sid, rows
+
+
 def generate_dataset(
     pde_cfg: PDEConfig,
     data_cfg: DataConfig,
     *,
     split: str = "train",
     output_path: str | Path | None = None,
-    rng: np.random.Generator | None = None,
+    num_workers: int = 1,
 ) -> Path:
     """Generate a single CSV of (solution_id, x, y, b1, b2, rho[, finv]).
 
-    Parameters
-    ----------
-    pde_cfg, data_cfg
-        Config slices. Everything numerical (fine grid, Reynolds,
-        k_max, n_train_solutions, output path) is driven from here.
-    split
-        "train" or "test" -- selects num_{train,test}_solutions and
-        the matching output path.
-    output_path
-        Explicit override; falls back to data_cfg.{train,test}_csv.
-    rng
-        Explicit Generator. If None, builds one from data_cfg.seed with
-        a ``split`` offset so train and test draws don't collide.
+    Reproducibility is anchored in ``data_cfg.seed`` (plus a split offset);
+    a ``SeedSequence`` is spawned per solution so the output is identical
+    regardless of ``num_workers``. Pass ``num_workers=-1`` to use all
+    cores reported by ``os.cpu_count()``.
+
+    The hot path is ``scipy.sparse.linalg.spsolve`` on an ~N²×N² system
+    (CPU-bound, no GPU payoff) but per-solution work is independent, so
+    an ``mp.Pool`` fans out near-linearly until the box runs out of cores.
+    Set single-threaded BLAS env vars (``OMP_NUM_THREADS=1`` etc.) before
+    launching to avoid oversubscription.
     """
     if split not in ("train", "test"):
         raise ValueError(f"split must be 'train' or 'test', got {split!r}")
@@ -89,100 +191,50 @@ def generate_dataset(
     out_path = Path(raw_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if rng is None:
-        # Offset so train/test draws are independent.
-        base_seed = data_cfg.seed + (0 if split == "train" else 1)
-        rng = np.random.default_rng(base_seed)
-
     num_solutions = (
         data_cfg.num_train_solutions if split == "train" else data_cfg.num_test_solutions
     )
 
-    fine_grid = pde_cfg.fine_grid
-    coarse_grid = pde_cfg.coarse_grid
-    n_interior = fine_grid - 2  # fine FD grid has n_interior + 2 points per axis
-    coarse_idx = _subsample_indices(fine_grid, coarse_grid)
+    # Deterministic per-solution seeds. Split offset keeps train/test draws
+    # disjoint even though they share data_cfg.seed.
+    base_seed = data_cfg.seed + (0 if split == "train" else 1)
+    child_sequences = np.random.SeedSequence(base_seed).spawn(num_solutions)
+    jobs = [
+        _SolutionJob(sid=sid, pde_cfg=pde_cfg, data_cfg=data_cfg, seed_seq=ss)
+        for sid, ss in enumerate(child_sequences)
+    ]
 
-    records: list[list[float]] = []
+    if num_workers < 0:
+        num_workers = os.cpu_count() or 1
+    num_workers = max(1, min(num_workers, num_solutions))
+
     columns = ["solution_id", "x", "y", "b1", "b2", "rho"]
     if data_cfg.include_finv_column:
         columns.append("finv")
 
-    for sid in tqdm(range(num_solutions), desc=f"generate[{split}]", unit="pde"):
-        # 1. Boundaries.
-        phi, psi = generate_boundary_pair(
-            rng,
-            kind=pde_cfg.domain,
-            n_max=pde_cfg.boundary_n_max,
-            eps=pde_cfg.boundary_eps,
-        )
+    desc = f"generate[{split}]"
+    if num_workers == 1:
+        results = [
+            _generate_one_solution(job)
+            for job in tqdm(jobs, desc=desc, unit="pde")
+        ]
+    else:
+        # ``spawn`` context avoids inheriting parent state on Linux (matches
+        # macOS default); imap_unordered streams results so tqdm updates live.
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(num_workers) as pool:
+            results = list(
+                tqdm(
+                    pool.imap_unordered(_generate_one_solution, jobs),
+                    total=num_solutions,
+                    desc=f"{desc} (x{num_workers})",
+                    unit="pde",
+                )
+            )
 
-        # 2. Velocity field.
-        field = turbulent_velocity_field(
-            reynolds=pde_cfg.reynolds,
-            char_length=pde_cfg.char_length,
-            viscosity=pde_cfg.viscosity,
-            k_min=pde_cfg.velocity_kmin,
-            k_max=pde_cfg.velocity_kmax,
-            eps_1=pde_cfg.eps_1,
-            eps_2=pde_cfg.eps_2,
-            n_grid=fine_grid,
-            rng=rng,
-        )
-
-        # 3. Wrap as (x, y)-meshgrid evaluators (the solvers call them
-        # with 2D arrays representing the transformed grid).
-        bx = field.bx
-        by = field.by
-
-        # 4. Solve committor PDEs.
-        q_plus, X, Y = solve_forward_committor(phi, psi, bx, by, n_interior)
-        q_minus, _, _ = solve_backward_committor(phi, psi, bx, by, n_interior)
-
-        # 5. Reactive density with the correct |Omega| factor.
-        omega = 1.0 if pde_cfg.domain == "square" else _domain_area(phi, psi)
-        rho = reactive_density(q_plus, q_minus, domain_area=omega)
-
-        # 6. Subsample to the coarse training grid.
-        ii, jj = np.meshgrid(coarse_idx, coarse_idx, indexing="ij")
-        x_c = np.asarray(X)[ii, jj]
-        y_c = np.asarray(Y)[ii, jj]
-        rho_c = rho[ii, jj]
-
-        # 7. Original-coordinate evaluations of b on the coarse grid.
-        #    For the square domain this is just b(x, y); for curved it
-        #    is b(f^{-1}(x, y), y).
-        if pde_cfg.domain == "square":
-            bx_c = bx(x_c, y_c)
-            by_c = by(x_c, y_c)
-        else:
-            f_inv = inverse_map(phi, psi)
-            xprime = np.asarray(f_inv(anp.asarray(x_c), anp.asarray(y_c)))
-            bx_c = bx(xprime, y_c)
-            by_c = by(xprime, y_c)
-
-        # Optional finv channel (curved domain only).
-        finv_c = None
-        if data_cfg.include_finv_column:
-            # f^{-1}(x, y) evaluated on the transformed coarse grid -- this
-            # carries the "shape of the boundary" information that the
-            # dissertation feeds as an extra FNO input channel.
-            f_inv = inverse_map(phi, psi)
-            finv_c = np.asarray(f_inv(anp.asarray(x_c), anp.asarray(y_c)))
-
-        for i in range(coarse_grid):
-            for j in range(coarse_grid):
-                row = [
-                    sid,
-                    float(x_c[i, j]),
-                    float(y_c[i, j]),
-                    float(bx_c[i, j]),
-                    float(by_c[i, j]),
-                    float(rho_c[i, j]),
-                ]
-                if finv_c is not None:
-                    row.append(float(finv_c[i, j]))
-                records.append(row)
+    # Re-order so byte-identical CSV across worker counts.
+    results.sort(key=lambda item: item[0])
+    records = [row for _, rows in results for row in rows]
 
     df = pd.DataFrame(records, columns=columns)
     df.to_csv(out_path, index=False)
