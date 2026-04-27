@@ -74,13 +74,14 @@ class _SolutionJob:
     seed_seq: np.random.SeedSequence
 
 
-def _generate_one_solution(job: _SolutionJob) -> tuple[int, list[list[float]]]:
+def _generate_one_solution(
+    job: _SolutionJob,
+) -> tuple[int, list[list[float]], float]:
     """Run the full per-solution pipeline and return its coarse-grid rows.
 
-    Returns ``(sid, rows)`` so that the orchestrator can re-sort the
-    results — ``pool.imap_unordered`` yields in arbitrary order and we
-    still want a byte-identical CSV for a given config + seed, whether
-    the run used 1 worker or 168.
+    Returns ``(sid, rows, rho_max)``. The orchestrator uses ``rho_max``
+    to apply rejection sampling (``DataConfig.rho_min_max``) and re-sorts
+    by ``sid`` so that the output CSV is identical across worker counts.
     """
     pde_cfg = job.pde_cfg
     data_cfg = job.data_cfg
@@ -158,7 +159,7 @@ def _generate_one_solution(job: _SolutionJob) -> tuple[int, list[list[float]]]:
                 row.append(float(finv_c[i, j]))
             rows.append(row)
 
-    return job.sid, rows
+    return job.sid, rows, float(rho_c.max())
 
 
 def generate_dataset(
@@ -191,14 +192,19 @@ def generate_dataset(
     out_path = Path(raw_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    num_solutions = (
+    num_target = (
         data_cfg.num_train_solutions if split == "train" else data_cfg.num_test_solutions
     )
+    rho_min_max = float(data_cfg.rho_min_max)
+    oversample = max(1.0, float(data_cfg.oversample_factor))
+    num_candidates = (
+        int(np.ceil(num_target * oversample)) if rho_min_max > 0.0 else num_target
+    )
 
-    # Deterministic per-solution seeds. Split offset keeps train/test draws
+    # Deterministic per-candidate seeds. Split offset keeps train/test draws
     # disjoint even though they share data_cfg.seed.
     base_seed = data_cfg.seed + (0 if split == "train" else 1)
-    child_sequences = np.random.SeedSequence(base_seed).spawn(num_solutions)
+    child_sequences = np.random.SeedSequence(base_seed).spawn(num_candidates)
     jobs = [
         _SolutionJob(sid=sid, pde_cfg=pde_cfg, data_cfg=data_cfg, seed_seq=ss)
         for sid, ss in enumerate(child_sequences)
@@ -206,7 +212,7 @@ def generate_dataset(
 
     if num_workers < 0:
         num_workers = os.cpu_count() or 1
-    num_workers = max(1, min(num_workers, num_solutions))
+    num_workers = max(1, min(num_workers, num_candidates))
 
     columns = ["solution_id", "x", "y", "b1", "b2", "rho"]
     if data_cfg.include_finv_column:
@@ -226,15 +232,42 @@ def generate_dataset(
             results = list(
                 tqdm(
                     pool.imap_unordered(_generate_one_solution, jobs),
-                    total=num_solutions,
+                    total=num_candidates,
                     desc=f"{desc} (x{num_workers})",
                     unit="pde",
                 )
             )
 
-    # Re-order so byte-identical CSV across worker counts.
+    # Sort by candidate sid for reproducibility before filtering.
     results.sort(key=lambda item: item[0])
-    records = [row for _, rows in results for row in rows]
+
+    if rho_min_max > 0.0:
+        accepted = [r for r in results if r[2] >= rho_min_max]
+        n_accepted = len(accepted)
+        n_rejected = num_candidates - n_accepted
+        print(
+            f"[{split}] rejection: {n_accepted}/{num_candidates} accepted "
+            f"(rho_min_max={rho_min_max:g}); {n_rejected} discarded as "
+            f"no-transition draws."
+        )
+        if n_accepted < num_target:
+            raise RuntimeError(
+                f"generate_dataset[{split}]: only {n_accepted} of {num_candidates} "
+                f"candidates passed rho_min_max={rho_min_max:g}; need {num_target}. "
+                f"Increase data.oversample_factor (currently {oversample:g}) or "
+                f"lower data.rho_min_max."
+            )
+        kept = accepted[:num_target]
+    else:
+        kept = results[:num_target]
+
+    # Renumber to a contiguous 0..num_target-1 range so downstream consumers
+    # can rely on solution_id being a dense index.
+    records: list[list[float]] = []
+    for new_sid, (_, rows, _) in enumerate(kept):
+        for row in rows:
+            row[0] = float(new_sid)
+            records.append(row)
 
     df = pd.DataFrame(records, columns=columns)
     df.to_csv(out_path, index=False)

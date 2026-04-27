@@ -88,6 +88,19 @@ class DataConfig:
     # PRNG seed -- passed to seed_everything and the velocity-field draws.
     seed: int = 2203_2025
 
+    # Rejection sampling at generation time. A "no-transition" sample
+    # (committor product near zero everywhere) carries no learning signal
+    # and detonates relative-L2 losses by sitting in the denominator. We
+    # discard solutions whose coarse-grid rho.max() falls below this
+    # threshold. 0.0 disables rejection.
+    rho_min_max: float = 0.01
+
+    # When rejection is enabled the generator draws ceil(N * oversample_factor)
+    # candidates and keeps the first N that pass the rho_min_max test.
+    # If too few pass, generate_dataset raises a RuntimeError. 1.0 disables
+    # oversampling (fail fast on any rejection).
+    oversample_factor: float = 1.5
+
 
 @dataclass
 class ModelConfig:
