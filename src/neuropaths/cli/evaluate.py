@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 
-import torch
+from pathlib import Path
+
+from neuralop.models import FNO
 
 from neuropaths.config import load_config
 from neuropaths.data import CommittorDataset, make_dataloader
-from neuropaths.models import FNO2D
 from neuropaths.utils import describe_device, get_device
 
 
@@ -33,9 +34,8 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=cfg.data.num_workers,
     )
 
-    model = FNO2D(cfg.model).to(device)
-    state = torch.load(cfg.eval.checkpoint_path, map_location=device)
-    model.load_state_dict(state)
+    ckpt = Path(cfg.eval.checkpoint_path)
+    model = FNO.from_checkpoint(ckpt.parent, ckpt.stem, map_location=device).to(device)
     model.eval()
 
     # TODO: compute metrics via neuropaths.evaluation.metrics and plot

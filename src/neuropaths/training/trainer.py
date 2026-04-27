@@ -8,8 +8,12 @@ TrainConfig drives it directly. Compared with the legacy
       eq. 11 metric, which the legacy code only used at evaluation;
     * evaluates on a held-out validation loader every epoch;
     * supports cosine / step LR schedules from TrainConfig;
-    * saves a state_dict checkpoint to ``cfg.checkpoint_path`` at the
-      end of training.
+    * saves the model via ``model.save_checkpoint`` (state_dict +
+      construction kwargs as separate files) so it can be reloaded with
+      ``FNO.from_checkpoint`` without needing the original ModelConfig.
+
+``cfg.checkpoint_path`` is interpreted as a *path prefix*: the trainer
+writes ``<parent>/<stem>_state_dict.pt`` and ``<parent>/<stem>_metadata.pkl``.
 """
 
 from __future__ import annotations
@@ -82,5 +86,8 @@ def train(
 
     checkpoint_path = Path(cfg.checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), checkpoint_path)
+    # neuralop's BaseModel.save_checkpoint writes two files:
+    #   <parent>/<stem>_state_dict.pt
+    #   <parent>/<stem>_metadata.pkl
+    model.save_checkpoint(checkpoint_path.parent, checkpoint_path.stem)
     return checkpoint_path
