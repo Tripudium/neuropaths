@@ -18,6 +18,7 @@ __pycache__/
 
 # Claude Code local state
 .claude/
+CLAUDE.md
 
 # LaTeX build artefacts (paper/)
 *.aux
