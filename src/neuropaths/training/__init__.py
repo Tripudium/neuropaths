@@ -1,6 +1,5 @@
-"""Training loops, losses, schedulers."""
+"""Training loops."""
 
-from neuropaths.training.losses import RelativeL2Loss
 from neuropaths.training.trainer import train
 
-__all__ = ["RelativeL2Loss", "train"]
+__all__ = ["train"]

@@ -91,24 +91,27 @@ class DataConfig:
 
 @dataclass
 class ModelConfig:
-    """FNO2D architecture."""
+    """FNO2D architecture (wraps neuralop.models.FNO)."""
 
-    # Number of input channels fed to the lifting layer R.
-    # Square domain: (x, y, b1, b2) -> 4.
-    # Curved domain: (x, y, b1, b2, f^{-1}) -> 5.
-    in_channels: int = 4
+    # Number of channels in the input *function*. The (x, y) grid
+    # coordinates are NOT counted here -- neuralop's FNO appends a 2-channel
+    # grid positional embedding internally before lifting.
+    # Square domain: (b1, b2) -> 2.
+    # Curved domain: (b1, b2, f^{-1}) -> 3.
+    in_channels: int = 2
     out_channels: int = 1
 
     # Fourier mode truncation k_max (same in both spatial dims).
     modes: int = 12
 
-    # Fourier channel width d_c.
+    # Fourier channel width d_c (neuralop: hidden_channels).
     width: int = 128
 
-    # Depth L (number of Fourier layers).
+    # Depth L (number of Fourier layers; neuralop: n_layers).
     depth: int = 4
 
-    # Projection layer hidden width (Q).
+    # Projection block hidden width (Q). Forwarded to neuralop as
+    # projection_channel_ratio = projection_hidden / width.
     projection_hidden: int = 128
 
     activation: Literal["gelu", "relu"] = "gelu"

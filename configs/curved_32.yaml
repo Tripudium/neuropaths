@@ -29,7 +29,7 @@ data:
   seed: 2203_2025
 
 model:
-  in_channels: 5        # (x, y, b1, b2, f^{-1})
+  in_channels: 3        # (b1, b2, f^{-1}); neuralop adds (x, y) via grid embedding
   out_channels: 1
   modes: 16
   width: 256

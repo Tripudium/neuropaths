@@ -36,6 +36,7 @@ dependencies = [
     "matplotlib>=3.9",
     "pyyaml>=6.0",
     "tqdm>=4.66",
+    "neuraloperator>=2.0.0",
 ]
 
 [project.optional-dependencies]

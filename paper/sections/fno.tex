@@ -1,0 +1,45 @@
+\section{Fourier Neural Operators}
+\label{sec:fno}
+
+Fourier Neural Operators (FNOs) were introduced in~\cite{li2020fourier} (see also~\cite{kovachki2023neuraloperatorduruisseaux2025guide}) to solve parametric partial differential equations. 
+One important feature of Neural Operators is that they are designed as maps from one function space to another. 
+While trained on discretisations of functions on a grid, the resulting model is grid-independent.
+
+\subsection{General structure of Neural Operators}
+Let $D\subset \R^d$ be an open domain. 
+Let $\mathcal{A}=\mathcal{A}(D;\R^{d_a})$ and $\mathcal{U}=\mathcal{U}(D;\R^{d_u})$ be two Banach spaces of functions on $D$.
+A Fourier Neural Operator is a map $\mathcal{F}:\mathcal{A}\to \mathcal{U}$ of the form
+\begin{equation*}
+  \mathcal{F} = \mathcal{Q}\circ \sigma(\mathcal{W}_L+\mathcal{K}_L)\circ \cdots \circ \sigma(\mathcal{W}_1+\mathcal{K}_1)\circ \mathcal{P},
+\end{equation*}
+where 
+
+
+
+Consider a linear differential operator
+\begin{equation*}
+  \mathcal{L}
+\end{equation*}
+
+\begin{example}
+Consider the heat equation on $\R$ at a fixed time $t>0$:
+\begin{equation*}
+  \partial_t u = \partial_{xx} u, \quad u(x,0)=u_0(x).
+\end{equation*}
+The fundamental solution (heat kernel) is given by
+\begin{equation*}
+  G_t(x) = \frac{1}{\sqrt{4\pi t}} \exp\left(-\frac{x^2}{4t}\right).
+\end{equation*}
+The solution to the heat equation at time $t$ is given by
+\begin{equation*}
+  u(x,t) = \int_{-\infty}^{\infty} G_t(x-y) u_0(y) dy.
+\end{equation*}
+The Fourier transform of the heat kernel is given by
+\begin{equation*}
+  \hat{G}_t(k) = \frac{1}{\sqrt{4\pi t}} \exp\left(-\frac{k^2}{4t}\right).
+\end{equation*}
+The Fourier transform of the solution to the heat equation is given by
+\begin{equation*}
+  \hat{u}(k,t) = \hat{u}_0(k) \hat{G}_t(k).
+\end{equation*}
+\end{example}

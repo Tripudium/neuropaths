@@ -27,7 +27,10 @@ CONFIG="${CONFIG:-configs/section2_laminar_32.yaml}"
 SPLIT="${SPLIT:-train}"
 
 cd "${SLURM_SUBMIT_DIR}"
-mkdir -p slurm/logs
+
+# Progress output: tqdm writes to stderr, which SLURM otherwise buffers
+# aggressively -- tail -f would show nothing until the job ended.
+export PYTHONUNBUFFERED=1
 
 # Each multiprocessing worker runs single-threaded BLAS; without these,
 # 32 workers * N BLAS threads oversubscribes the node and slows everything

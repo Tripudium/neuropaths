@@ -2,15 +2,21 @@
 
 Each CSV row is a single coarse-grid sample (x, y, b1, b2, rho[, finv])
 tagged by solution_id. The Dataset groups by solution_id once in
-__init__ and yields, per sample:
+__init__ and yields, per sample, a dict matching what
+``neuralop.Trainer`` expects (batch keys "x" and "y"):
 
-    input:  (C, G, G) float32 tensor
-            C = 4 (x, y, b1, b2) for square domains
-            C = 5 (..., finv)    for curved domains
-    target: (1, G, G) float32 tensor  (rho_react on the coarse grid)
+    {
+        "x": (C, G, G) float32 tensor,
+              C = 2 (b1, b2)        for square domains
+              C = 3 (b1, b2, finv)  for curved domains
+        "y": (1, G, G) float32 tensor,  # rho_react on the coarse grid
+    }
 
-The channels-first layout matches the FNO2D convention used by the
-legacy `FNO_1.py` and by typical torch spectral-conv implementations.
+The (x, y) coordinate columns are *not* loaded as channels: neuralop's
+FNO appends a grid positional embedding internally (and re-instantiates
+it at the evaluation resolution, which is what makes zero-shot
+super-resolution well-defined). They are still used to deterministically
+order rows within a solution group.
 """
 
 from __future__ import annotations
@@ -50,10 +56,6 @@ class CommittorDataset(Dataset):
                 f"include_finv=True but CSV {self.csv_path} has no 'finv' column."
             )
 
-        # Cache everything up-front. For the target dataset sizes
-        # (~5000 solutions * 32^2 cells = 5.12M rows, ~5-6 floats each)
-        # this is well under a GB and saves the groupby overhead per
-        # __getitem__ call.
         expected = self.grid_size * self.grid_size
         groups = list(df.groupby("solution_id", sort=True))
 
@@ -67,15 +69,16 @@ class CommittorDataset(Dataset):
                     f"from a different coarse_grid."
                 )
 
-            # Ensure a deterministic (x, y) ordering matching the generator's
-            # meshgrid(indexing='ij'): rows ordered by (x ascending, y ascending).
+            # Match the generator's meshgrid(indexing='ij'): rows ordered
+            # by (x ascending, y ascending). The (x, y) columns are used
+            # only for ordering; they are not loaded as input channels.
             group = group.sort_values(["x", "y"], kind="mergesort").reset_index(drop=True)
             G = self.grid_size
 
             def reshape(col: str) -> np.ndarray:
                 return group[col].to_numpy(dtype=np.float32).reshape(G, G)
 
-            channels = [reshape("x"), reshape("y"), reshape("b1"), reshape("b2")]
+            channels = [reshape("b1"), reshape("b2")]
             if self.include_finv:
                 channels.append(reshape("finv"))
             inp = np.stack(channels, axis=0)  # (C, G, G)
@@ -87,8 +90,8 @@ class CommittorDataset(Dataset):
     def __len__(self) -> int:
         return len(self._inputs)
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._inputs[idx], self._targets[idx]
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        return {"x": self._inputs[idx], "y": self._targets[idx]}
 
 
 def make_dataloader(
