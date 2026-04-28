@@ -40,7 +40,7 @@ resolution, which is what makes zero-shot super-resolution well-defined.
         cli/          # neuropaths-{generate,train,evaluate}
         utils/        # device selection, seeding, IO
     configs/          # experiment YAMLs (square_{16,32,63}, curved_32, smoke_test)
-    slurm/            # SLURM job scripts for Warwick's Blythe cluster
+    slurm/            # SLURM job scripts for Warwick's Avon or Blythe clusters
     tests/            # pytest suite (PDE solvers + rejection sampling)
     paper/            # LaTeX notes
     papers/           # reference PDFs (dissertation, FNO, SDE)
@@ -151,6 +151,16 @@ model = FNO.from_checkpoint(ckpt.parent, ckpt.stem, map_location="cuda")
 ported (see `cli/evaluate.py`); for now, use the two helper scripts
 described below to inspect a trained run.
 
+### Pulling code over from Avon
+
+For plotting you'd want to work locally, even if you do the training on Avon.
+You can pull the logs, run summaries and checkpoints over using rsync:
+
+```bash
+rsync -avh --progress  username@avon:~/neuropaths/slurm/logs .
+rsync -avh --progress  username@avon:~/neuropaths/runs .
+```
+
 ### Plot the training curve
 
 `scripts/plot_training_curve.py` parses the per-epoch log lines that
@@ -193,11 +203,11 @@ you can compare to the train/val numbers from the training curve.
 Pass `--seed` to look at multiple held-out draws; the default (999)
 is fixed so the demo is reproducible.
 
-## Running on Blythe (SLURM)
+## Running on Avon / Blythe (SLURM)
 
-`scrtp/` holds offline copies of Warwick's Blythe HPC cluster docs;
+`scrtp/` holds offline copies of Warwick's HPC cluster docs;
 the SLURM scripts in `slurm/` follow those conventions. There are
-three scripts:
+four scripts:
 
 | script | partition | resources | purpose |
 |---|---|---|---|
