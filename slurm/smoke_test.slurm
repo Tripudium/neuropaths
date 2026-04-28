@@ -26,15 +26,18 @@
 #SBATCH --time=00:30:00
 
 # ── Environment ───────────────────────────────────────────────────────
-source /springbrook/share/maths/maskbg/neuropaths/slurm/env.sh
-source "${VENV_DIR}/bin/activate"
-cd "${PROJECT_DIR}"
+# Submit from the repo root: `${SLURM_SUBMIT_DIR}` is the directory you
+# ran `sbatch` from, so this works on any cluster (Blythe, Avon, ...)
+# where you've cloned the repo and run `uv sync --frozen` once.
+cd "${SLURM_SUBMIT_DIR}"
+# Optional per-machine knobs (cache redirects, MLflow URI, etc.); the
+# file is gitignored so each clone can carry its own.
+[ -f slurm/env.sh ] && source slurm/env.sh
+source "${VENV_DIR:-.venv}/bin/activate"
 
 set -euo pipefail
 
 CONFIG="${CONFIG:-configs/smoke_test.yaml}"
-
-cd "${SLURM_SUBMIT_DIR}"
 
 export PYTHONUNBUFFERED=1
 
@@ -44,8 +47,6 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
-
-uv sync --frozen || uv sync
 
 echo "[$(date -Is)] host=$(hostname) cpus=${SLURM_CPUS_PER_TASK} gpu=$(nvidia-smi -L | head -1) config=${CONFIG}"
 

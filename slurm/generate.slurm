@@ -22,16 +22,16 @@
 # For a quick smoke test: --cpus-per-task=4  --time=00:30:00.
 
 # ── Environment ───────────────────────────────────────────────────────
-source /springbrook/share/maths/maskbg/neuropaths/slurm/env.sh
-source "${VENV_DIR}/bin/activate"
-cd "${PROJECT_DIR}"
+# Submit from the repo root; works on any cluster where you've cloned
+# the repo and run `uv sync --frozen` once.
+cd "${SLURM_SUBMIT_DIR}"
+[ -f slurm/env.sh ] && source slurm/env.sh
+source "${VENV_DIR:-.venv}/bin/activate"
 
 set -euo pipefail
 
 CONFIG="${CONFIG:-configs/section2_laminar_32.yaml}"
 SPLIT="${SPLIT:-train}"
-
-cd "${SLURM_SUBMIT_DIR}"
 
 # Progress output: tqdm writes to stderr, which SLURM otherwise buffers
 # aggressively -- tail -f would show nothing until the job ended.
@@ -45,10 +45,6 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
-
-# Resolve dependencies into .venv. `uv sync --frozen` requires a uv.lock;
-# drop --frozen on the first run (it will materialise the lockfile).
-uv sync --frozen || uv sync
 
 echo "[$(date -Is)] host=$(hostname) cpus=${SLURM_CPUS_PER_TASK} config=${CONFIG} split=${SPLIT}"
 

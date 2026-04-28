@@ -38,6 +38,11 @@ runs/
 *.pth
 *.ckpt
 
+# Per-machine SLURM environment overrides (cache redirects, MLflow
+# URIs, etc.). Each cluster has different paths; the slurm scripts
+# source this file only if it happens to exist.
+slurm/env.sh
+
 # Other
 scrtp
 todo

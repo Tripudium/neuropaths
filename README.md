@@ -205,8 +205,76 @@ three scripts:
 | `slurm/generate_full.slurm` | (default CPU) | 168 CPUs, 2 h | generate train + test for a full run |
 | `slurm/train_full.slurm` | gpu | 1 L40, 10 CPUs, 4 h | train on already-generated data |
 
-All scripts call `uv sync --frozen` first to ensure the venv on the
-node matches the lockfile, then run the relevant CLI.
+### One-time setup
+
+1. Clone the repo somewhere you have write access. Anywhere works:
+   `$HOME/neuropaths`, a project share, scratch — the SLURM scripts
+   key off `${SLURM_SUBMIT_DIR}` (= the directory you `sbatch` from)
+   so they're not tied to a specific path.
+2. Materialise the venv once on a login node:
+
+   ```bash
+   cd path/to/neuropaths
+   uv sync --frozen
+   ```
+
+3. Submit jobs from that same directory:
+
+   ```bash
+   cd path/to/neuropaths
+   sbatch slurm/train_full.slurm
+   ```
+
+   Each script does `cd "${SLURM_SUBMIT_DIR}"` and activates `.venv/`
+   relative to that, so subsequent runs start in seconds with no
+   `uv sync` overhead per job.
+
+If you ever change `pyproject.toml` or `uv.lock`, re-run `uv sync
+--frozen` once to rebuild the venv before the next submission.
+
+> **CUDA driver pin.** `pyproject.toml` constrains `torch` to
+> `>=2.5,<2.11`. The 2.11 PyPI Linux wheel is built against CUDA ≥
+> 12.6, which needs a newer NVIDIA driver than Blythe currently runs
+> (driver 12.0.x → CUDA 12.0). Versions 2.5–2.10 ship CUDA wheels that
+> work on the cluster's driver, so don't relax that upper bound
+> without checking `nvidia-smi` on a GPU node first.
+
+### Optional `slurm/env.sh` (per-machine overrides)
+
+The SLURM scripts source `slurm/env.sh` if it happens to exist. The
+file is gitignored so each clone can carry its own. You only need it
+when you want to override defaults — for instance on Blythe where the
+`$HOME` quota is tight and it's helpful to redirect caches into the
+project directory, or when you want a shared MLflow tracking URI.
+
+A typical Blythe-flavoured `slurm/env.sh`:
+
+```bash
+# Project root (defaults to ${SLURM_SUBMIT_DIR} if env.sh is absent).
+export PROJECT_DIR="/springbrook/share/maths/maskbg/neuropaths"
+export VENV_DIR="${PROJECT_DIR}/.venv"
+
+# Redirect caches off $HOME.
+CACHE_ROOT="${PROJECT_DIR}/.cache"
+export UV_CACHE_DIR="${CACHE_ROOT}/uv"
+export PIP_CACHE_DIR="${CACHE_ROOT}/pip"
+export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
+export MPLCONFIGDIR="${CACHE_ROOT}/matplotlib"
+export TORCH_HOME="${CACHE_ROOT}/torch"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/triton"
+export TMPDIR="${CACHE_ROOT}/tmp/${SLURM_JOB_ID:-local}"
+mkdir -p "${UV_CACHE_DIR}" "${PIP_CACHE_DIR}" "${XDG_CACHE_HOME}" \
+         "${MPLCONFIGDIR}" "${TORCH_HOME}" "${TRITON_CACHE_DIR}" "${TMPDIR}"
+
+# Optional: shared MLflow / wandb-offline.
+export MLFLOW_TRACKING_URI="file:///springbrook/share/maths/maskbg/mlruns"
+export WANDB_MODE=offline
+```
+
+On a machine where you don't need any of this (e.g. running from
+`$HOME` on Avon with plenty of quota), just don't create the file and
+the scripts use sensible defaults — `VENV_DIR=.venv`,
+`PROJECT_DIR=${SLURM_SUBMIT_DIR}`, `$HOME`-default caches.
 
 ### Smoke test
 
