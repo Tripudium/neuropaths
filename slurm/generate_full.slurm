@@ -20,7 +20,7 @@
 #SBATCH --error=slurm/logs/%x-%j.err
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=168
+#SBATCH --cpus-per-task=48
 #SBATCH --time=02:00:00
 
 # ── Environment ───────────────────────────────────────────────────────
