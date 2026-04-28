@@ -75,6 +75,18 @@ def train(
         device=device,
         verbose=True,
     )
+
+    checkpoint_path = Path(cfg.checkpoint_path)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # When a val loader is wired, ask neuralop's Trainer to track the
+    # best val_l2 across epochs and snapshot training state on every
+    # improvement. Without this the saved checkpoint is whatever the
+    # final epoch produced -- which on a cosine schedule is usually
+    # past the val minimum.
+    save_best = "val_l2" if val_loader is not None else None
+    best_dir = checkpoint_path.parent / "_best"
+
     trainer.train(
         train_loader=train_loader,
         test_loaders=test_loaders,
@@ -82,10 +94,20 @@ def train(
         scheduler=scheduler,
         training_loss=train_loss,
         eval_losses=eval_losses,
+        save_best=save_best,
+        save_dir=best_dir,
     )
 
-    checkpoint_path = Path(cfg.checkpoint_path)
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    # If save_best was active, the in-memory model is the LAST epoch's
+    # weights (overfit). Load the best-val snapshot back before writing
+    # the canonical checkpoint files.
+    best_state = best_dir / "best_model_state_dict.pt"
+    if save_best is not None and best_state.exists():
+        model.load_state_dict(
+            torch.load(best_state, map_location=device, weights_only=False)
+        )
+        print(f"Loaded best-{save_best} weights from {best_state}.")
+
     # neuralop's BaseModel.save_checkpoint writes two files:
     #   <parent>/<stem>_state_dict.pt
     #   <parent>/<stem>_metadata.pkl

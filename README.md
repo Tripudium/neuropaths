@@ -52,6 +52,15 @@ Requires Python 3.13 (pinned in `.python-version`) and
 [uv](https://docs.astral.sh/uv/). The `neuraloperator` library is
 declared as a dependency and resolved automatically.
 
+To install uv on Avon, try
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | env CARGO_HOME=~/.cargo sh
+```
+and then add to your `.bashrc`
+
+    export PATH="/springbrook/share/maths/maskbg/.cargo/bin:$PATH"
+
+
 ```bash
 git clone <this repo> neuropaths
 cd neuropaths

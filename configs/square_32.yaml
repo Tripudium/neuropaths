@@ -44,7 +44,7 @@ train:
   lr: 0.001
   weight_decay: 0.0
   loss: relative_l2     # dissertation eq. 11; override 'mse' if matching legacy
-  scheduler: none
+  scheduler: cosine     # CosineAnnealingLR over `epochs`; LR -> 0 at the end
   checkpoint_path: runs/square_32/fno2d.pth
   device: auto
   deterministic: false
