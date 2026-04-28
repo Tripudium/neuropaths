@@ -46,6 +46,7 @@ slurm/env.sh
 # Other
 scrtp
 todo
-slurm/logs
+slurm/logs/*
+!slurm/logs/.gitkeep
 papers
 paper

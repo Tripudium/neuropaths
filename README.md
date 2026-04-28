@@ -201,9 +201,17 @@ three scripts:
 
 | script | partition | resources | purpose |
 |---|---|---|---|
-| `slurm/smoke_test.slurm` | gpu | 1 L40, 10 CPUs, 30 min | smoke-test the pipeline end-to-end on `configs/smoke_test.yaml` |
-| `slurm/generate_full.slurm` | (default CPU) | 168 CPUs, 2 h | generate train + test for a full run |
-| `slurm/train_full.slurm` | gpu | 1 L40, 10 CPUs, 4 h | train on already-generated data |
+| `slurm/smoke_test.slurm` | gpu | 1 L40, 10 CPUs, 30 min | smoke-test the pipeline end-to-end on `configs/smoke_test.yaml` (Blythe) |
+| `slurm/generate_full.slurm` | (default CPU) | 168 CPUs (Blythe) / 48 CPUs (Avon), 2 h | generate train + test for a full run |
+| `slurm/train_full.slurm` | gpu | 1 L40, 10 CPUs, 4 h | train on Blythe (Lovelace L40 GPU) |
+| `slurm/train_full_avon.slurm` | gpu | 1 RTX 6000, 10 CPUs, 4 h | train on Avon (Quadro RTX 6000 GPU) |
+
+The two training scripts differ only in their GPU directives — Blythe
+uses `--gres=gpu:lovelace_l40:1` with `--mem-per-cpu=5960`, Avon uses
+`--gres=gpu:quadro_rtx_6000:1` with `--mem-per-cpu=4000` (4 GB/core,
+matching the Avon spec). Pick the one that matches your cluster. The
+generate script is the same on both clusters; just adjust
+`--cpus-per-task` to match the node size (168 on Blythe, 48 on Avon).
 
 ### One-time setup
 
