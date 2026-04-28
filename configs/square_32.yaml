@@ -60,9 +60,12 @@ train:
   epochs: 50
   lr: 0.001
   weight_decay: 0.0001  # AdamW-style L2 reg; closes some of the small-data overfitting gap
-  # relative_l2: dissertation metric, ||x-y||/(||y||+loss_eps).
-  # absolute_l2 / h1 / mse also supported.
-  loss: relative_l2
+  # H1 Sobolev loss penalises both function value and gradient errors;
+  # fno-explained.pdf §5.1 recommends it for elliptic PDEs whose
+  # solutions are smooth (committors qualify). Switch to relative_l2 /
+  # absolute_l2 / mse to compare. periodic_in_x=False, periodic_in_y=True
+  # is wired in trainer._build_loss to match the committor BCs.
+  loss: h1
   loss_eps: 1.0         # caps amplification when ||y||_2 is small
   scheduler: cosine     # CosineAnnealingLR over `epochs`; LR -> 0 at the end
   checkpoint_path: runs/square_32/fno2d.pth
