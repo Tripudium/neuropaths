@@ -76,12 +76,13 @@ class _SolutionJob:
 
 def _generate_one_solution(
     job: _SolutionJob,
-) -> tuple[int, list[list[float]], float]:
+) -> tuple[int, list[list[float]], float, float]:
     """Run the full per-solution pipeline and return its coarse-grid rows.
 
-    Returns ``(sid, rows, rho_max)``. The orchestrator uses ``rho_max``
-    to apply rejection sampling (``DataConfig.rho_min_max``) and re-sorts
-    by ``sid`` so that the output CSV is identical across worker counts.
+    Returns ``(sid, rows, rho_max, rho_l2)``. The orchestrator uses both
+    summary statistics for rejection sampling (`DataConfig.rho_min_max`
+    and `DataConfig.rho_min_l2`) and re-sorts by ``sid`` so that the
+    output CSV is identical across worker counts.
     """
     pde_cfg = job.pde_cfg
     data_cfg = job.data_cfg
@@ -159,7 +160,7 @@ def _generate_one_solution(
                 row.append(float(finv_c[i, j]))
             rows.append(row)
 
-    return job.sid, rows, float(rho_c.max())
+    return job.sid, rows, float(rho_c.max()), float(np.linalg.norm(rho_c))
 
 
 def generate_dataset(
@@ -196,9 +197,11 @@ def generate_dataset(
         data_cfg.num_train_solutions if split == "train" else data_cfg.num_test_solutions
     )
     rho_min_max = float(data_cfg.rho_min_max)
+    rho_min_l2 = float(data_cfg.rho_min_l2)
+    rejection_active = rho_min_max > 0.0 or rho_min_l2 > 0.0
     oversample = max(1.0, float(data_cfg.oversample_factor))
     num_candidates = (
-        int(np.ceil(num_target * oversample)) if rho_min_max > 0.0 else num_target
+        int(np.ceil(num_target * oversample)) if rejection_active else num_target
     )
 
     # Deterministic per-candidate seeds. Split offset keeps train/test draws
@@ -241,21 +244,25 @@ def generate_dataset(
     # Sort by candidate sid for reproducibility before filtering.
     results.sort(key=lambda item: item[0])
 
-    if rho_min_max > 0.0:
-        accepted = [r for r in results if r[2] >= rho_min_max]
+    if rejection_active:
+        accepted = [
+            r for r in results
+            if r[2] >= rho_min_max and r[3] >= rho_min_l2
+        ]
         n_accepted = len(accepted)
         n_rejected = num_candidates - n_accepted
         print(
             f"[{split}] rejection: {n_accepted}/{num_candidates} accepted "
-            f"(rho_min_max={rho_min_max:g}); {n_rejected} discarded as "
-            f"no-transition draws."
+            f"(rho_min_max={rho_min_max:g}, rho_min_l2={rho_min_l2:g}); "
+            f"{n_rejected} discarded as no-transition or near-degenerate draws."
         )
         if n_accepted < num_target:
             raise RuntimeError(
                 f"generate_dataset[{split}]: only {n_accepted} of {num_candidates} "
-                f"candidates passed rho_min_max={rho_min_max:g}; need {num_target}. "
-                f"Increase data.oversample_factor (currently {oversample:g}) or "
-                f"lower data.rho_min_max."
+                f"candidates passed rejection (rho_min_max={rho_min_max:g}, "
+                f"rho_min_l2={rho_min_l2:g}); need {num_target}. Increase "
+                f"data.oversample_factor (currently {oversample:g}) or relax "
+                f"a threshold."
             )
         kept = accepted[:num_target]
     else:
@@ -264,7 +271,7 @@ def generate_dataset(
     # Renumber to a contiguous 0..num_target-1 range so downstream consumers
     # can rely on solution_id being a dense index.
     records: list[list[float]] = []
-    for new_sid, (_, rows, _) in enumerate(kept):
+    for new_sid, (_, rows, _, _) in enumerate(kept):
         for row in rows:
             row[0] = float(new_sid)
             records.append(row)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -62,5 +63,22 @@ class TestRejectionSampling:
         # Threshold of 0.99 will reject essentially every draw; oversample_factor=1
         # gives no slack so generation must fail.
         cfg = replace(small_data_cfg, rho_min_max=0.99, oversample_factor=1.0)
-        with pytest.raises(RuntimeError, match="passed rho_min_max"):
+        with pytest.raises(RuntimeError, match="passed rejection"):
             generate_dataset(small_pde_cfg, cfg, split="train", num_workers=1)
+
+    def test_l2_norm_filter_complements_peak(self, small_pde_cfg, small_data_cfg):
+        # Filter on the L2 norm: catches samples whose peak passes
+        # rho_min_max but whose overall mass is too small for relative-L2
+        # to be well-conditioned.
+        cfg = replace(
+            small_data_cfg,
+            rho_min_max=0.0,
+            rho_min_l2=2.0,
+            oversample_factor=4.0,
+        )
+        path = generate_dataset(small_pde_cfg, cfg, split="train", num_workers=1)
+        df = pd.read_csv(path)
+        per_sol_l2 = df.groupby("solution_id")["rho"].apply(
+            lambda r: float(np.linalg.norm(r.to_numpy()))
+        )
+        assert (per_sol_l2 >= cfg.rho_min_l2).all(), per_sol_l2.tolist()

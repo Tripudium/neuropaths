@@ -75,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         sid=0, pde_cfg=cfg.pde, data_cfg=cfg.data, seed_seq=seed_seq
     )
     print(f"Solving demo PDE (seed={args.seed}) at fine_grid={cfg.pde.fine_grid}...")
-    _, rows, rho_max = _generate_one_solution(job)
-    print(f"  rho.max() = {rho_max:.4f}")
+    _, rows, rho_max, rho_l2 = _generate_one_solution(job)
+    print(f"  rho.max() = {rho_max:.4f},  ||rho||_2 = {rho_l2:.4f}")
 
     inp_np, target_np = _input_target_from_rows(
         rows, cfg.pde.coarse_grid, cfg.data.include_finv_column

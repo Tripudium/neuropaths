@@ -48,6 +48,7 @@ def build_fno(cfg: ModelConfig) -> nn.Module:
         projection_channel_ratio=cfg.projection_hidden / cfg.width,
         positional_embedding="grid",
         non_linearity=_ACTIVATIONS[cfg.activation],
+        domain_padding=cfg.domain_padding,
     )
 
 

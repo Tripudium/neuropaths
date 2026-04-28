@@ -21,10 +21,40 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-from neuralop import LpLoss, Trainer
+from neuralop import H1Loss, LpLoss, Trainer
 from torch.utils.data import DataLoader
 
 from neuropaths.config import TrainConfig
+
+
+class _AbsLpLoss:
+    """Adapter exposing ``LpLoss.abs`` through the standard callable API.
+
+    neuralop's ``LpLoss.__call__`` returns ``rel`` regardless; ``abs`` is
+    only reachable via the method directly. We wrap it so the Trainer can
+    call ``loss(out, **sample)`` uniformly.
+    """
+
+    def __init__(self, lp_loss: LpLoss) -> None:
+        self.lp_loss = lp_loss
+
+    def __call__(self, y_pred, y, **kwargs):
+        return self.lp_loss.abs(y_pred, y)
+
+
+class _MSELossKW:
+    """``torch.nn.MSELoss`` adapter that accepts (and ignores) extra kwargs.
+
+    neuralop's Trainer calls the loss as ``loss(out, **sample)`` which
+    passes both ``x`` and ``y`` as keyword arguments. neuralop's losses
+    swallow unknown kwargs; ``nn.MSELoss`` does not, so wrap it.
+    """
+
+    def __init__(self) -> None:
+        self.mse = torch.nn.MSELoss()
+
+    def __call__(self, y_pred, y, **kwargs):
+        return self.mse(y_pred, y)
 
 
 def _build_scheduler(
@@ -41,11 +71,25 @@ def _build_scheduler(
     return torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=1.0)
 
 
-def _build_loss(cfg: TrainConfig) -> torch.nn.Module:
+def _build_loss(cfg: TrainConfig):
+    """Build the loss callable named in `cfg.loss`.
+
+    For relative_l2 / h1, an additive ``loss_eps`` (>0) caps the
+    amplification when ``||y||_2`` is small. Defaults to 0.0, in which
+    case neuralop's internal default of 1e-8 is used.
+    """
+    eps = max(float(cfg.loss_eps), 1e-8)
     if cfg.loss == "relative_l2":
-        return LpLoss(d=2, p=2)
+        return LpLoss(d=2, p=2, eps=eps)
+    if cfg.loss == "absolute_l2":
+        return _AbsLpLoss(LpLoss(d=2, p=2))
+    if cfg.loss == "h1":
+        # Committor BCs: Dirichlet in x, periodic in y. Telling the
+        # loss about non-periodicity in x avoids spurious gradient
+        # contributions across the Dirichlet boundary.
+        return H1Loss(d=2, eps=eps, periodic_in_x=False, periodic_in_y=True)
     if cfg.loss == "mse":
-        return torch.nn.MSELoss()
+        return _MSELossKW()
     raise ValueError(f"Unsupported loss: {cfg.loss!r}")
 
 

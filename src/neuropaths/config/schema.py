@@ -88,15 +88,25 @@ class DataConfig:
     # PRNG seed -- passed to seed_everything and the velocity-field draws.
     seed: int = 2203_2025
 
-    # Rejection sampling at generation time. A "no-transition" sample
-    # (committor product near zero everywhere) carries no learning signal
-    # and detonates relative-L2 losses by sitting in the denominator. We
-    # discard solutions whose coarse-grid rho.max() falls below this
-    # threshold. 0.0 disables rejection.
+    # Rejection sampling at generation time. We use two complementary
+    # criteria to drop "no-transition" or near-degenerate samples that
+    # detonate relative-L2 losses (the per-sample ||y||_2 sits in the
+    # denominator and small targets blow it up):
+    #
+    #   * `rho_min_max`: discard if the coarse-grid rho.max() is below
+    #     this peak threshold. Cheap, kills the obvious zero-everywhere
+    #     cases. 0.0 disables.
+    #   * `rho_min_l2`:  discard if ||rho||_2 (over the coarse grid) is
+    #     below this threshold. This is the principled criterion --
+    #     it matches the quantity that actually appears in LpLoss's
+    #     denominator. 0.0 disables.
+    #
+    # A candidate must clear BOTH thresholds to be accepted.
     rho_min_max: float = 0.01
+    rho_min_l2: float = 0.0
 
     # When rejection is enabled the generator draws ceil(N * oversample_factor)
-    # candidates and keeps the first N that pass the rho_min_max test.
+    # candidates and keeps the first N that pass both thresholds.
     # If too few pass, generate_dataset raises a RuntimeError. 1.0 disables
     # oversampling (fail fast on any rejection).
     oversample_factor: float = 1.5
@@ -129,6 +139,14 @@ class ModelConfig:
 
     activation: Literal["gelu", "relu"] = "gelu"
 
+    # Per-axis domain padding (fraction of grid size). Required for the
+    # FFT-based spectral convolution when an axis is non-periodic --
+    # otherwise the FFT sees a hard discontinuity at the Dirichlet
+    # boundary. fno-explained.pdf §3.6 recommends padding only the
+    # non-periodic axes. For our (Dirichlet x, periodic y) setup the
+    # natural choice is e.g. [0.125, 0.0]. ``None`` disables padding.
+    domain_padding: list[float] | None = None
+
 
 @dataclass
 class TrainConfig:
@@ -136,9 +154,24 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 0.0
 
-    # Dissertation uses relative L2 loss (eq. 10) for training and eval.
-    # Legacy `FNO_1.py` uses MSELoss -- flag this as a reconciliation task.
-    loss: Literal["relative_l2", "mse"] = "relative_l2"
+    # Loss function. Options:
+    #   * "relative_l2": neuralop.LpLoss(d=2, p=2).rel  -- the dissertation
+    #     metric ||x-y||_2 / (||y||_2 + loss_eps); long tail when ||y||->0.
+    #   * "absolute_l2": neuralop.LpLoss(d=2, p=2).abs  -- pure ||x-y||_2,
+    #     immune to the small-target singularity. Recommended for committor
+    #     problems where ||y||_2 varies several orders of magnitude.
+    #   * "h1": neuralop.H1Loss(d=2)  -- Sobolev norm penalising both
+    #     value and gradient errors. fno-explained.pdf §5.1 recommends
+    #     this for elliptic PDEs whose solutions are smooth.
+    #   * "mse": torch.nn.MSELoss() -- legacy fallback.
+    loss: Literal["relative_l2", "absolute_l2", "h1", "mse"] = "relative_l2"
+
+    # Additive eps in the relative-L2 denominator: ||x-y||_2 / (||y||_2 + eps).
+    # Caps the amplification when ||y||_2 is small. Only used by the relative
+    # and h1 losses. Set to ~1.0 if relative-L2 has visible long-tail outliers
+    # in the validation distribution; 0.0 falls through to neuralop's default
+    # (1e-8, effectively no stabilisation).
+    loss_eps: float = 0.0
 
     scheduler: Literal["none", "cosine", "step"] = "none"
     step_size: int = 30

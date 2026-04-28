@@ -25,28 +25,45 @@ data:
   batch_size: 32
   num_workers: 0
   seed: 2203_2025
-  # Rejection sampling: drop draws whose committor product is essentially
-  # zero everywhere (no detectable transitions). 0.05 keeps relative-L2
-  # losses well-conditioned -- below this threshold the per-sample
-  # ||y||_2 in the denominator drives the overall metric. Empirically
-  # ~70% of candidates pass on this setup, so oversample 2x for headroom.
+  # Rejection sampling. Two complementary criteria; both must hold:
+  #   * rho_min_max: cheap peak filter, kills the obviously zero cases.
+  #   * rho_min_l2:  filters the actual quantity that appears in the
+  #                  relative-L2 denominator. Catches "low rho_max but
+  #                  ||rho||_2 also tiny" samples that otherwise produce
+  #                  long-tail per-sample losses.
+  # Empirically ~80% of candidates pass at these thresholds, so oversample 2x.
   rho_min_max: 0.05
+  rho_min_l2:  1.0
   oversample_factor: 2.0
 
 model:
   in_channels: 2        # (b1, b2); neuralop adds (x, y) via grid embedding
   out_channels: 1
   modes: 12
-  width: 128
+  # width 32 (down from 128) per fno-explained.pdf §4.4: start at 16-32
+  # and grow only if needed. 128 was wildly over-parameterised (~1.4M
+  # params) for a 32x32 grid + 5000 samples; 32 gives ~90k params and
+  # should close most of the train/val gap.
+  width: 32
   depth: 4
-  projection_hidden: 128
+  projection_hidden: 64    # 2x width, matches neuralop's default ratio
   activation: gelu
+  # Dirichlet x is non-periodic; the FFT inside SpectralConv would see a
+  # hard step at x=0,1 without padding. Pad x by 12.5% of grid; leave y
+  # untouched (it's genuinely periodic). fno-explained.pdf §3.6.
+  domain_padding: [0.125, 0.0]
 
 train:
-  epochs: 100
+  # 50 instead of 100: the previous run hit val min at epoch 16 with cosine
+  # over 100 epochs, where LR was still ~94% of peak. Halving T_max anneals
+  # LR more aggressively in the band where val is actually decreasing.
+  epochs: 50
   lr: 0.001
   weight_decay: 0.0001  # AdamW-style L2 reg; closes some of the small-data overfitting gap
-  loss: relative_l2     # dissertation eq. 11; override 'mse' if matching legacy
+  # relative_l2: dissertation metric, ||x-y||/(||y||+loss_eps).
+  # absolute_l2 / h1 / mse also supported.
+  loss: relative_l2
+  loss_eps: 1.0         # caps amplification when ||y||_2 is small
   scheduler: cosine     # CosineAnnealingLR over `epochs`; LR -> 0 at the end
   checkpoint_path: runs/square_32/fno2d.pth
   device: auto
