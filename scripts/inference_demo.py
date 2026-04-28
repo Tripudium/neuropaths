@@ -89,8 +89,23 @@ def main(argv: list[str] | None = None) -> int:
     model = FNO.from_checkpoint(ckpt_path.parent, ckpt_path.stem, map_location="cpu")
     model.eval()
 
+    # Apply the same per-channel normalisation that was used at training
+    # time. CLI train writes <stem>_stats.npz next to the checkpoint.
+    stats_path = ckpt_path.parent / f"{ckpt_path.stem}_stats.npz"
+    if stats_path.exists():
+        stats = np.load(stats_path)
+        mean = stats["mean"].reshape(-1, 1, 1)
+        std = stats["std"].reshape(-1, 1, 1)
+        inp_np = (inp_np - mean) / std
+        print(f"Applied normalisation from {stats_path}.")
+    else:
+        print(
+            f"WARNING: no normalisation stats at {stats_path}; running unnormalised. "
+            f"This is only correct if the checkpoint was trained without normalisation."
+        )
+
     with torch.no_grad():
-        inp_t = torch.from_numpy(inp_np).unsqueeze(0)  # (1, C, G, G)
+        inp_t = torch.from_numpy(inp_np.astype(np.float32)).unsqueeze(0)  # (1, C, G, G)
         pred_t = model(inp_t)
     pred_np = pred_t.squeeze().cpu().numpy()
 

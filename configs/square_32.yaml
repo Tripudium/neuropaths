@@ -25,10 +25,12 @@ data:
   num_workers: 0
   seed: 2203_2025
   # Rejection sampling: drop draws whose committor product is essentially
-  # zero everywhere (no detectable transitions). 1500 candidates -> 1000
-  # accepted is the usual outcome at rho_min_max=0.01 on this setup.
-  rho_min_max: 0.01
-  oversample_factor: 1.5
+  # zero everywhere (no detectable transitions). 0.05 keeps relative-L2
+  # losses well-conditioned -- below this threshold the per-sample
+  # ||y||_2 in the denominator drives the overall metric. Empirically
+  # ~70% of candidates pass on this setup, so oversample 2x for headroom.
+  rho_min_max: 0.05
+  oversample_factor: 2.0
 
 model:
   in_channels: 2        # (b1, b2); neuralop adds (x, y) via grid embedding
