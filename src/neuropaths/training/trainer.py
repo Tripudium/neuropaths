@@ -57,6 +57,55 @@ class _MSELossKW:
         return self.mse(y_pred, y)
 
 
+@torch.no_grad()
+def _final_eval(
+    model: torch.nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+) -> dict[str, float]:
+    """Compute summary metrics on the validation set after training.
+
+    Returns four metrics that together pin down a checkpoint's quality:
+
+    * ``per_sample_mean_rel_l2``: mean of ``||p_i - y_i||_2 / ||y_i||_2``
+      across val samples. This is what neuralop's Trainer reports as
+      ``val_l2`` each epoch.
+    * ``global_rel_l2``: ``||P - Y||_2 / ||Y||_2`` with P, Y the full
+      flattened test-set tensors. Matches the dissertation's
+      ``relative_l2_test_error`` (FNO_1_Test.py line 102) — weights
+      samples by ``||y_i||_2``, so it is structurally immune to the
+      small-target singularity that inflates the per-sample mean.
+    * ``mse`` / ``mae``: pointwise on the same data, useful when targets
+      are bounded (here rho ∈ [0, 1]).
+    """
+    model.eval()
+    sq_diff = 0.0
+    sq_y = 0.0
+    abs_diff = 0.0
+    n_cells = 0
+    sum_per_sample_rel_l2 = 0.0
+    n_samples = 0
+    for sample in val_loader:
+        x = sample["x"].to(device)
+        y = sample["y"].to(device)
+        out = model(x)
+        diff = (out - y).flatten(1)
+        y_flat = y.flatten(1)
+        sq_diff += (diff * diff).sum().item()
+        sq_y += (y_flat * y_flat).sum().item()
+        abs_diff += diff.abs().sum().item()
+        n_cells += diff.numel()
+        per_sample_rel = diff.norm(dim=1) / (y_flat.norm(dim=1) + 1e-8)
+        sum_per_sample_rel_l2 += per_sample_rel.sum().item()
+        n_samples += y.shape[0]
+    return {
+        "per_sample_mean_rel_l2": sum_per_sample_rel_l2 / max(n_samples, 1),
+        "global_rel_l2": (sq_diff / sq_y) ** 0.5,
+        "mse": sq_diff / max(n_cells, 1),
+        "mae": abs_diff / max(n_cells, 1),
+    }
+
+
 def _build_scheduler(
     optimizer: torch.optim.Optimizer, cfg: TrainConfig
 ) -> torch.optim.lr_scheduler.LRScheduler:
@@ -151,6 +200,15 @@ def train(
             torch.load(best_state, map_location=device, weights_only=False)
         )
         print(f"Loaded best-{save_best} weights from {best_state}.")
+
+    # Final summary on the val set with the loaded best weights, including
+    # the dissertation's flattened global rel L2 alongside neuralop's
+    # per-sample mean.
+    if val_loader is not None:
+        metrics = _final_eval(model, val_loader, device)
+        print("Final val metrics (best-checkpoint weights):")
+        for name, value in metrics.items():
+            print(f"  {name:<25}= {value:.4f}")
 
     # neuralop's BaseModel.save_checkpoint writes two files:
     #   <parent>/<stem>_state_dict.pt

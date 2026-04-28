@@ -25,15 +25,14 @@ data:
   batch_size: 32
   num_workers: 0
   seed: 2203_2025
-  # Rejection sampling. Two complementary criteria; both must hold:
-  #   * rho_min_max: cheap peak filter, kills the obviously zero cases.
-  #   * rho_min_l2:  filters the actual quantity that appears in the
-  #                  relative-L2 denominator. Catches "low rho_max but
-  #                  ||rho||_2 also tiny" samples that otherwise produce
-  #                  long-tail per-sample losses.
-  # Empirically ~80% of candidates pass at these thresholds, so oversample 2x.
+  # Rejection sampling. The cheap peak filter (rho_min_max) is enough --
+  # the dissertation's flattened global rel L2 (FNO_1_Test.py line 102)
+  # weights samples by ||y||_2 so it's already insensitive to small-
+  # target draws. We previously used rho_min_l2=1.0 to defend against
+  # the per-sample-mean metric's small-target singularity; that was a
+  # response to the wrong metric and is no longer load-bearing.
   rho_min_max: 0.05
-  rho_min_l2:  1.0
+  rho_min_l2:  0.0
   oversample_factor: 2.0
 
 model:
@@ -66,7 +65,10 @@ train:
   # absolute_l2 / mse to compare. periodic_in_x=False, periodic_in_y=True
   # is wired in trainer._build_loss to match the committor BCs.
   loss: h1
-  loss_eps: 1.0         # caps amplification when ||y||_2 is small
+  loss_eps: 0.0         # 0 falls through to neuralop's 1e-8 default.
+                        # We previously used 1.0 to cap small-target
+                        # blow-up in per-sample rel L2; the dissertation's
+                        # flattened global metric doesn't need that.
   scheduler: cosine     # CosineAnnealingLR over `epochs`; LR -> 0 at the end
   checkpoint_path: runs/square_32/fno2d.pth
   device: auto
