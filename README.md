@@ -2,8 +2,7 @@
 
 Learning transition paths in turbulent 2D domains with Fourier Neural
 Operators. Implements the FNO pipeline from Higham's MA4K9 dissertation
-*Learning Transition Paths in Turbulent Domains with Neural Operators*
-(`papers/rproject.pdf`).
+*Learning Transition Paths in Turbulent Domains with Neural Operators*.
 
 ## What it does
 
@@ -60,6 +59,7 @@ and then add to your `.bashrc`
 
     export PATH="/springbrook/share/maths/maskbg/.cargo/bin:$PATH"
 
+Install the package with
 
 ```bash
 git clone <this repo> neuropaths
@@ -69,7 +69,9 @@ uv sync --frozen        # creates .venv and installs from uv.lock
 
 The first `uv sync` materialises a venv at `.venv/`. After that, all
 commands run via `uv run <cmd>` so you don't need to activate the venv
-explicitly.
+explicitly. The reason we are doing it this way is because it seems more
+convenient to have all the right packages available than having to use
+what is available on Avon.
 
 To pull in test/lint tooling:
 
@@ -84,6 +86,10 @@ The pipeline is driven by a single YAML config that specifies the PDE
 parameters, dataset size, model architecture, and training schedule.
 See `configs/square_32.yaml` for the canonical setup (32×32 coarse
 grid, 1000 train + 200 test PDE solutions, 100 epochs, FNO width 128).
+
+For running on Avon or Blythe interactively, you might need to request 
+and interactive shell, as outlined in 
+[https://docs.scrtp.warwick.ac.uk/hpc-pages/hpc-interactive.html](https://docs.scrtp.warwick.ac.uk/hpc-pages/hpc-interactive.html)
 
 ### Generate data
 
