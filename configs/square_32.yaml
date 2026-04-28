@@ -16,8 +16,9 @@ pde:
   eps_2: 0.0
 
 data:
-  num_train_solutions: 1000
-  num_test_solutions: 200
+  # Dissertation main result (Table 1, s=s'=32) uses 5000 train + 1000 test.
+  num_train_solutions: 5000
+  num_test_solutions: 1000
   train_csv: runs/square_32/train.csv
   test_csv:  runs/square_32/test.csv
   include_finv_column: false
@@ -44,7 +45,7 @@ model:
 train:
   epochs: 100
   lr: 0.001
-  weight_decay: 0.0
+  weight_decay: 0.0001  # AdamW-style L2 reg; closes some of the small-data overfitting gap
   loss: relative_l2     # dissertation eq. 11; override 'mse' if matching legacy
   scheduler: cosine     # CosineAnnealingLR over `epochs`; LR -> 0 at the end
   checkpoint_path: runs/square_32/fno2d.pth
