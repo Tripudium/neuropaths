@@ -21,6 +21,11 @@
 # For a whole Blythe node: --cpus-per-task=168 (matches the docs' blythe-example).
 # For a quick smoke test: --cpus-per-task=4  --time=00:30:00.
 
+# ── Environment ───────────────────────────────────────────────────────
+source /springbrook/share/maths/maskbg/neuropaths/slurm/env.sh
+source "${VENV_DIR}/bin/activate"
+cd "${PROJECT_DIR}"
+
 set -euo pipefail
 
 CONFIG="${CONFIG:-configs/section2_laminar_32.yaml}"

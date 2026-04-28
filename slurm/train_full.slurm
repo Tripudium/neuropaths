@@ -28,6 +28,11 @@
 #SBATCH --mem-per-cpu=5960
 #SBATCH --time=04:00:00
 
+# ── Environment ───────────────────────────────────────────────────────
+source /springbrook/share/maths/maskbg/neuropaths/slurm/env.sh
+source "${VENV_DIR}/bin/activate"
+cd "${PROJECT_DIR}"
+
 set -euo pipefail
 
 CONFIG="${CONFIG:-configs/square_32.yaml}"
