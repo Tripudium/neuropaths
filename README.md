@@ -97,8 +97,26 @@ are printed at the end of each split.
 uv run neuropaths-train --config configs/square_32.yaml
 ```
 
-Trains via `neuralop.Trainer` with `LpLoss(d=2, p=2)` and Adam.
-Validation loss is reported each epoch on `cfg.data.test_csv`.
+Trains via `neuralop.Trainer` with the loss named in `cfg.train.loss`
+(`relative_l2`, `absolute_l2`, `h1`, or `mse`) and Adam. Validation
+relative-L2 is reported each epoch on `cfg.data.test_csv`. After the
+best-val checkpoint is reloaded, the trainer prints a final summary:
+
+    Final val metrics (best-checkpoint weights):
+      per_sample_mean_rel_l2   = ...   ← what neuralop reports each epoch
+      global_rel_l2            = ...   ← dissertation FNO_1_Test.py:102
+      mse                      = ...
+      mae                      = ...
+
+Both rel-L2 numbers are useful: the per-sample mean averages
+`||p_i - y_i||₂ / ||y_i||₂` over the val set (dominated by samples
+with small `||y_i||₂`), while the global rel L2 flattens all
+predictions and targets into one long vector and divides one big norm
+by another (weights samples by `||y_i||₂`, so it tracks bulk-of-distribution
+quality). When the targets vary by orders of magnitude in scale, the two
+numbers can disagree by ~50%, and only the global metric is comparable
+to the dissertation's Table 1 entries.
+
 Checkpoints are written through neuralop's `BaseModel.save_checkpoint`,
 which produces two files at the path prefix:
 
@@ -181,6 +199,37 @@ uv run python scripts/inference_demo.py \
 The script prints per-sample relative L2 and mean absolute error so
 you can compare to the train/val numbers from the training curve.
 
+### Zero-shot super-resolution evaluation
+
+`scripts/super_resolution_eval.py` reproduces the dissertation's
+Table 1: train at one grid `s`, evaluate at every `s'` in
+`cfg.eval.test_resolutions` without retraining. The FNO's
+discretisation invariance means the same weights apply at any
+`s' ≥ 2 · n_modes`; for `s' < 2 · n_modes` neuralop silently
+truncates the spectral coefficients (so a `n_modes=12` model can be
+evaluated at 16 — only 9 modes are usable, the rest are zeroed).
+
+```bash
+uv run python scripts/super_resolution_eval.py --config configs/square_32.yaml --num-workers 8
+```
+
+For each resolution it generates `runs/<name>/eval/super_res_test_<G>.csv`
+on a fresh seed band (offset from train and val so draws are disjoint),
+loads the train-time normalisation stats, runs the model, and prints:
+
+```
+   grid |     N |   global rel L2 |   per-sample mean |        MSE |        MAE
+     16 |  1000 |          ...    |               ... |         ... |        ...
+     32 |  1000 |          ...    |               ... |         ... |        ...
+     63 |  1000 |          ...    |               ... |         ... |        ...
+```
+
+Rejection sampling is *disabled* during super-res generation so all
+three resolutions see the same underlying PDEs — this makes the rows
+directly comparable. The FD solve is the cost driver (~2 s/PDE at
+fine_grid=311 on a single core), so locally use `--num-workers 8`.
+Pass `--regenerate` to rebuild the CSVs (otherwise they're cached).
+
 ## Running on Avon / Blythe (SLURM)
 
 `scrtp/` holds offline copies of Warwick's HPC cluster docs;
@@ -193,6 +242,7 @@ four scripts:
 | `slurm/generate_full.slurm` | (default CPU) | 168 CPUs (Blythe) / 48 CPUs (Avon), 2 h | generate train + test for a full run |
 | `slurm/train_full.slurm` | gpu | 1 L40, 10 CPUs, 4 h | train on Blythe (Lovelace L40 GPU) |
 | `slurm/train_full_avon.slurm` | gpu | 1 RTX 6000, 10 CPUs, 4 h | train on Avon (Quadro RTX 6000 GPU) |
+| `slurm/super_resolution_eval.slurm` | gpu | 1 RTX 6000, 10 CPUs, 1 h | generate test data at all `cfg.eval.test_resolutions` and evaluate (Avon) |
 
 The two training scripts differ only in their GPU specifications — Blythe
 uses `--gres=gpu:lovelace_l40:1` with `--mem-per-cpu=5960`, Avon uses
@@ -269,6 +319,65 @@ sacct -u maskbg
 
 There are two files in slurm/logs that record the progress and status for each run. You can look at these to see how things
 are going.
+
+## Status: square-domain baseline at parity with the dissertation
+
+`configs/square_32.yaml` (32×32 coarse grid, 5000 train + 1000 test,
+50 epochs on a single Avon RTX 6000) reaches **global rel L2 = 0.401**
+on the val set, vs the dissertation's reported **0.411** for the same
+cell of Table 1.
+
+The path from "barely learning" to parity, with the chain of changes
+that each unlocked the next step:
+
+| run | global rel L2 | per-sample mean rel L2 | what changed |
+|---|---|---|---|
+| initial Avon run | — | 0.985 | torch resolved to a CUDA wheel newer than Avon's driver; trained on CPU |
+| + CUDA wheel pin (`torch>=2.5,<2.11`) | — | 0.985 | training on the L40/RTX 6000; same overfit pattern |
+| + `save_best`, `loss_eps`, cosine T=50 | — | 0.529 | best-val checkpoint instead of final epoch |
+| + per-channel input normalisation | — | 0.529 → 0.348 (held-out) | `b1, b2` (RMS ~ 50) standardised; FNO learns the operator instead of absorbing scale |
+| + 5× data, weight decay 1e-4 | — | 0.529 | dissertation's data scale; gap 30× still |
+| + width 32, projection 64, domain padding `[0.125, 0.0]` | — | 0.571 | capacity right-sized (1.42M → 357K params); gap 30× → 7× |
+| + H1 loss | — | 0.517 | Sobolev signal for elliptic PDE (fno-explained.pdf §5.1) |
+| + dual-metric reporting | **0.401** | 0.596 | discovered `LpLoss` per-sample-mean ≠ dissertation's flattened global metric; the model was already at parity, the metric definition wasn't |
+
+The two metrics disagree because val targets `||y_i||₂` span
+~p5=1.55 to p95=21.1; the per-sample mean weights every sample
+equally so the bottom-percentile drags it up, while the global metric
+weights by `||y_i||₂` and tracks the bulk. Both numbers are useful;
+only the global one is directly comparable to the dissertation's
+Table 1.
+
+Held-out PDE example (seed=999, freshly generated, never in train/test
+since the seed sequence is per-split):
+
+    rel L2 = 0.098,  mean |err| = 0.044
+
+![inference example](runs/square_32/inference_demo.png)
+
+Reproduce locally:
+
+```bash
+sbatch slurm/generate_full.slurm     # ~15 min on a 48-core Avon node
+sbatch slurm/train_full_avon.slurm   # ~2 min on a Quadro RTX 6000
+uv run python scripts/plot_training_curve.py slurm/logs/neuropaths-train-<jobid>.out
+uv run python scripts/inference_demo.py --config configs/square_32.yaml
+```
+
+Open follow-ups (not blockers for the baseline):
+
+- **Zero-shot super-resolution table is wired up** — see
+  `scripts/super_resolution_eval.py` and
+  `slurm/super_resolution_eval.slurm`. Run it on Avon to fill in the
+  s=32, s'∈{16, 32, 63} row of dissertation Table 1.
+- Curved-domain experiment (`configs/curved_32.yaml`) needs the
+  `f^{-1}` channel at inference and an `inverse_map` smoke test.
+- Architectural knobs the fno-explained.pdf audit flagged that we did
+  not enable: anisotropic modes `(8, 12)`, `norm="instance_norm"`,
+  `channel_mlp_dropout`. Likely small further wins; uncertain how much
+  they buy on top of the global metric.
+- Port `neuropaths-evaluate` so this table can be regenerated from a
+  saved checkpoint without `_final_eval` being inlined in the trainer.
 
 ## Tests
 
