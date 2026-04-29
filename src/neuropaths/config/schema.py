@@ -147,6 +147,22 @@ class ModelConfig:
     # natural choice is e.g. [0.125, 0.0]. ``None`` disables padding.
     domain_padding: list[float] | None = None
 
+    # Pathway controls inside each FNO block. neuralop's defaults bolt
+    # on a per-block channel MLP (with its own skip path) on top of the
+    # standard Li et al. 2021 architecture. These extras can train the
+    # operator to lean on grid-specific feature interactions, which
+    # then breaks zero-shot super-resolution at unseen grid sizes (we
+    # observed this empirically: ok at G=16, fails at G=63).
+    #
+    # Set ``use_channel_mlp: false`` and ``channel_mlp_skip: "none"``
+    # to recover the vanilla architecture; keep ``fno_skip: "linear"``
+    # for the original W_l skip from Li et al.
+    #
+    # Use "none" (string) to map to Python None.
+    use_channel_mlp: bool = True
+    channel_mlp_skip: Literal["linear", "identity", "soft-gating", "none"] = "soft-gating"
+    fno_skip: Literal["linear", "identity", "soft-gating", "none"] = "linear"
+
 
 @dataclass
 class TrainConfig:

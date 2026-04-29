@@ -35,6 +35,11 @@ from neuropaths.config import ModelConfig
 _ACTIVATIONS = {"gelu": F.gelu, "relu": F.relu}
 
 
+def _skip(spec: str):
+    """Translate the YAML "none" sentinel to neuralop's Python None."""
+    return None if spec == "none" else spec
+
+
 def build_fno(cfg: ModelConfig) -> nn.Module:
     """Build a 2D FNO from `cfg`."""
     if cfg.activation not in _ACTIVATIONS:
@@ -49,6 +54,9 @@ def build_fno(cfg: ModelConfig) -> nn.Module:
         positional_embedding="grid",
         non_linearity=_ACTIVATIONS[cfg.activation],
         domain_padding=cfg.domain_padding,
+        use_channel_mlp=cfg.use_channel_mlp,
+        channel_mlp_skip=_skip(cfg.channel_mlp_skip),
+        fno_skip=_skip(cfg.fno_skip),
     )
 
 
