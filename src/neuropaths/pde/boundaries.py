@@ -67,19 +67,23 @@ def identity_boundaries() -> tuple[BoundaryFn, BoundaryFn]:
 
 
 def _trig_polynomial(coeffs: np.ndarray) -> BoundaryFn:
-    """Return y -> sum_k c_k sin(k pi y), autograd-compatible."""
-    # Store as a plain numpy array so autograd can differentiate.
-    # `anp.asarray` inside the closure keeps it traceable.
+    """Return y -> sum_k c_k sin(k pi y), autograd-compatible.
+
+    Works on `y` of arbitrary shape (scalar, 1D, 2D meshgrid, ...). The
+    leading mode axis is reshaped to ``(N, 1, 1, ...)`` so it broadcasts
+    against any `y` and the sum reduces it to `y.shape`.
+    """
     coeffs = np.asarray(coeffs, dtype=float)
     N = coeffs.shape[0]
-    # Frequencies k = 1..N, shaped (N, 1) for broadcasting over y.
-    k_arr = np.arange(1, N + 1, dtype=float)[:, None]
-    c_arr = coeffs[:, None]
+    k_arr = np.arange(1, N + 1, dtype=float)
+    c_arr = coeffs
 
     def f(y):
         y_arr = anp.atleast_1d(y)
-        # sum over k axis: (N, M) -> (M,)
-        return anp.sum(c_arr * anp.sin(k_arr * anp.pi * y_arr), axis=0)
+        new_shape = (N,) + (1,) * y_arr.ndim
+        k = k_arr.reshape(new_shape)
+        c = c_arr.reshape(new_shape)
+        return anp.sum(c * anp.sin(k * anp.pi * y_arr), axis=0)
 
     return f
 

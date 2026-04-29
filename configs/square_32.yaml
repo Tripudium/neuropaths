@@ -14,6 +14,12 @@ pde:
   domain: square       # phi = 0, psi = 1 (identity transform)
   eps_1: 0.0
   eps_2: 0.0
+  # Velocity-field Fourier-mode band: |k| in [kmin, kmax] * (2*pi/L_dom).
+  # Operator_learning_chapter.pdf §2.4 splits the regimes here:
+  #   kmax = 8  -> laminar  (this config)
+  #   kmax = 16 -> turbulent (see configs/square_32_turbulent.yaml)
+  velocity_kmin: 1
+  velocity_kmax: 8
 
 data:
   # Dissertation main result (Table 1, s=s'=32) uses 5000 train + 1000 test.
@@ -28,9 +34,7 @@ data:
   # Rejection sampling. The cheap peak filter (rho_min_max) is enough --
   # the dissertation's flattened global rel L2 (FNO_1_Test.py line 102)
   # weights samples by ||y||_2 so it's already insensitive to small-
-  # target draws. We previously used rho_min_l2=1.0 to defend against
-  # the per-sample-mean metric's small-target singularity; that was a
-  # response to the wrong metric and is no longer load-bearing.
+  # target draws.
   rho_min_max: 0.05
   rho_min_l2:  0.0
   oversample_factor: 2.0
@@ -53,9 +57,6 @@ model:
   domain_padding: [0.125, 0.0]
 
 train:
-  # 50 instead of 100: the previous run hit val min at epoch 16 with cosine
-  # over 100 epochs, where LR was still ~94% of peak. Halving T_max anneals
-  # LR more aggressively in the band where val is actually decreasing.
   epochs: 50
   lr: 0.001
   weight_decay: 0.0001  # AdamW-style L2 reg; closes some of the small-data overfitting gap

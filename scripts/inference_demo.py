@@ -33,6 +33,7 @@ from neuralop.models import FNO
 
 from neuropaths.config.loader import load_config
 from neuropaths.data.generator import _generate_one_solution, _SolutionJob
+from neuropaths.pde.boundaries import generate_boundary_pair
 
 
 def _input_target_from_rows(
@@ -78,6 +79,19 @@ def main(argv: list[str] | None = None) -> int:
     _, rows, rho_max, rho_l2 = _generate_one_solution(job)
     print(f"  rho.max() = {rho_max:.4f},  ||rho||_2 = {rho_l2:.4f}")
 
+    # Recreate the same (phi, psi) the worker used so we can plot the
+    # physical boundary curves and warp the transformed grid back to
+    # original coordinates. ``np.random.default_rng(seed_seq)`` is
+    # deterministic in `seed_seq` so this reproduces the worker's draw
+    # exactly. For square domains phi=0, psi=1 and the warped grid is
+    # the unit square; the same rendering code handles both.
+    phi, psi = generate_boundary_pair(
+        np.random.default_rng(seed_seq),
+        kind=cfg.pde.domain,
+        n_max=cfg.pde.boundary_n_max,
+        eps=cfg.pde.boundary_eps,
+    )
+
     inp_np, target_np = _input_target_from_rows(
         rows, cfg.pde.coarse_grid, cfg.data.include_finv_column
     )
@@ -115,31 +129,57 @@ def main(argv: list[str] | None = None) -> int:
     abs_err = np.abs(pred_np - target_np).mean()
     print(f"Demo metrics: rel L2 = {rel_l2:.4f}  mean |err| = {abs_err:.4f}")
 
-    # Render a three-panel comparison. Share the colour scale between
-    # ground truth and prediction so the eye isn't misled.
+    # Render a three-panel comparison in *physical* (x', y) coordinates.
+    # The dataset stores values on a uniform (x_hat, y) grid (transformed
+    # coords); we warp to physical x' = phi(y) + x_hat * (psi(y) - phi(y))
+    # and use pcolormesh to render on the resulting non-rectilinear grid.
+    # For square domains (phi=0, psi=1) the warp is the identity.
+    G = cfg.pde.coarse_grid
+    x_hat_axis = np.linspace(0.0, 1.0, G)
+    y_axis = np.linspace(0.0, 1.0, G)
+    X_hat, Y = np.meshgrid(x_hat_axis, y_axis, indexing="ij")
+    phi_Y = np.asarray(phi(Y))
+    psi_Y = np.asarray(psi(Y))
+    X_phys = phi_Y + X_hat * (psi_Y - phi_Y)
+
     bmag = np.sqrt(inp_np[0] ** 2 + inp_np[1] ** 2)
     vmin = float(min(target_np.min(), pred_np.min()))
     vmax = float(max(target_np.max(), pred_np.max()))
 
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.5), constrained_layout=True)
-    extent = (0.0, 1.0, 0.0, 1.0)
+    # Boundary curves for overlay.
+    y_curve = np.linspace(0.0, 1.0, 200)
+    phi_curve = np.asarray(phi(y_curve))
+    psi_curve = np.asarray(psi(y_curve))
+    is_curved = cfg.pde.domain == "curved"
 
-    im0 = axes[0].imshow(bmag.T, origin="lower", extent=extent, cmap="viridis")
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.5), constrained_layout=True)
+
+    im0 = axes[0].pcolormesh(X_phys, Y, bmag, cmap="viridis", shading="auto")
     axes[0].set_title(r"$|b|$ (input magnitude)")
     fig.colorbar(im0, ax=axes[0], shrink=0.85)
 
-    im1 = axes[1].imshow(target_np.T, origin="lower", extent=extent,
-                         cmap="coolwarm", vmin=vmin, vmax=vmax)
+    im1 = axes[1].pcolormesh(X_phys, Y, target_np, cmap="coolwarm",
+                             vmin=vmin, vmax=vmax, shading="auto")
     axes[1].set_title(r"$\rho_{\mathrm{react}}$ (FD ground truth)")
     fig.colorbar(im1, ax=axes[1], shrink=0.85)
 
-    im2 = axes[2].imshow(pred_np.T, origin="lower", extent=extent,
-                         cmap="coolwarm", vmin=vmin, vmax=vmax)
+    im2 = axes[2].pcolormesh(X_phys, Y, pred_np, cmap="coolwarm",
+                             vmin=vmin, vmax=vmax, shading="auto")
     axes[2].set_title(rf"$\hat\rho$  (rel L2 = {rel_l2:.3f})")
     fig.colorbar(im2, ax=axes[2], shrink=0.85)
 
+    # For curved domains, overlay the A (left) and B (right) boundaries
+    # so the irregular shape is visible.
+    if is_curved:
+        for ax in axes:
+            ax.plot(phi_curve, y_curve, "k-", linewidth=1.5, label="A: $\\varphi$")
+            ax.plot(psi_curve, y_curve, "k-", linewidth=1.5, label="B: $\\psi$")
+            ax.set_xlim(min(phi_curve.min(), 0.0) - 0.02,
+                        max(psi_curve.max(), 1.0) + 0.02)
+
     for ax in axes:
         ax.set_xlabel("x"); ax.set_ylabel("y")
+        ax.set_aspect("equal")
 
     out = args.output or (Path(cfg.output_dir) / "inference_demo.png")
     out.parent.mkdir(parents=True, exist_ok=True)

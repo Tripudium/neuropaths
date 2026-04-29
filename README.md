@@ -137,8 +137,17 @@ model = FNO.from_checkpoint(ckpt.parent, ckpt.stem, map_location="cuda")
 
 - `configs/smoke_test.yaml` — 20 train + 5 test, 5 epochs, FNO width 64.
   Runs quickly, just to check everything works.
+- `configs/smoke_test_curved.yaml` — same idea but with random
+  trig-polynomial boundaries and `f^{-1}` as a third input channel.
+  Use this to iterate on curved-domain code without the cost of a full
+  curved run.
 - `configs/square_{16,32,63}.yaml` — resolution sweep for Table 1 of
-  the dissertation (Section 5.1).
+  the dissertation (Section 5.1). Default `velocity_kmax = 8` (laminar).
+- `configs/square_32_turbulent.yaml` — sibling of `square_32.yaml`
+  with `velocity_kmax = 16` for the turbulent regime of
+  `Operator_learning_chapter.pdf` §2.4. Same architecture and training
+  schedule; outputs go to `runs/square_32_turbulent/` so artefacts
+  don't collide.
 - `configs/section2_laminar_32.yaml` — laminar variant (`velocity_kmax = 8`).
 - `configs/curved_32.yaml` — 5000 PDEs with random trig-polynomial
   boundaries, `f^{-1}` fed as an extra input channel (Section 5.2).
@@ -184,6 +193,20 @@ independent seed (so it cannot have leaked into train/test), runs it
 through a checkpoint, and writes a 3-panel comparison PNG: the input
 velocity magnitude `|b|`, the FD ground-truth `rho_react`, and the
 FNO's prediction (with shared colour scale on the latter two).
+
+For curved domains (`cfg.pde.domain == "curved"`) the panels are
+warped from transformed coords back to the physical (x', y) domain
+via `f^{-1}`, with the boundary curves φ(y) and ψ(y) overlaid in
+black so the irregular shape is visible. For square domains the warp
+is the identity and the panels are unit squares as before.
+
+A complementary debugging tool, `scripts/plot_boundaries.py`, draws a
+grid of random trig-polynomial domains so you can spot-check the
+boundary generator without running a full PDE pipeline:
+
+```bash
+uv run python scripts/plot_boundaries.py --n 12 --seed 0 --output figs/boundaries.png
+```
 
 ```bash
 uv run python scripts/inference_demo.py --config configs/square_32.yaml
@@ -311,6 +334,34 @@ gen=$(CONFIG=configs/curved_32.yaml sbatch --parsable slurm/generate_full.slurm)
 sbatch --dependency=afterok:$gen --export=ALL,CONFIG=configs/curved_32.yaml slurm/train_full.slurm
 ```
 
+#### Laminar vs turbulent regime
+
+The velocity-field Fourier-mode cap `pde.velocity_kmax` switches
+between the two regimes of `Operator_learning_chapter.pdf` §2.4:
+
+- `configs/square_32.yaml` — `velocity_kmax: 8` (laminar)
+- `configs/square_32_turbulent.yaml` — `velocity_kmax: 16` (turbulent)
+
+Same architecture and training schedule in both, only the velocity
+spectrum differs. Output directories don't collide
+(`runs/square_32/` vs `runs/square_32_turbulent/`), so you can chain
+both runs back-to-back. On Avon:
+
+```bash
+# Laminar (the dissertation comparison baseline)
+gen=$(CONFIG=configs/square_32.yaml sbatch --parsable slurm/generate_full.slurm)
+sbatch --dependency=afterok:$gen --export=ALL,CONFIG=configs/square_32.yaml slurm/train_full_avon.slurm
+
+# Turbulent
+gen=$(CONFIG=configs/square_32_turbulent.yaml sbatch --parsable slurm/generate_full.slurm)
+sbatch --dependency=afterok:$gen --export=ALL,CONFIG=configs/square_32_turbulent.yaml slurm/train_full_avon.slurm
+```
+
+Each pair takes ~25 min (generation, ~12000 PDEs at 2 s/solve on 48
+cores) plus ~2 min (training, 50 epochs on the RTX 6000). Submit both
+generate jobs immediately and they'll queue in parallel; the train
+jobs only allocate the GPU once their respective generate completes.
+
 Once you submitted jobs, you can check them with ```squeue``` or check the status with
 
 ```bash
@@ -320,38 +371,11 @@ sacct -u maskbg
 There are two files in slurm/logs that record the progress and status for each run. You can look at these to see how things
 are going.
 
-## Status: square-domain baseline at parity with the dissertation
+## Status: square-domain baseline
 
 `configs/square_32.yaml` (32×32 coarse grid, 5000 train + 1000 test,
 50 epochs on a single Avon RTX 6000) reaches **global rel L2 = 0.401**
-on the val set, vs the dissertation's reported **0.411** for the same
-cell of Table 1.
-
-The path from "barely learning" to parity, with the chain of changes
-that each unlocked the next step:
-
-| run | global rel L2 | per-sample mean rel L2 | what changed |
-|---|---|---|---|
-| initial Avon run | — | 0.985 | torch resolved to a CUDA wheel newer than Avon's driver; trained on CPU |
-| + CUDA wheel pin (`torch>=2.5,<2.11`) | — | 0.985 | training on the L40/RTX 6000; same overfit pattern |
-| + `save_best`, `loss_eps`, cosine T=50 | — | 0.529 | best-val checkpoint instead of final epoch |
-| + per-channel input normalisation | — | 0.529 → 0.348 (held-out) | `b1, b2` (RMS ~ 50) standardised; FNO learns the operator instead of absorbing scale |
-| + 5× data, weight decay 1e-4 | — | 0.529 | dissertation's data scale; gap 30× still |
-| + width 32, projection 64, domain padding `[0.125, 0.0]` | — | 0.571 | capacity right-sized (1.42M → 357K params); gap 30× → 7× |
-| + H1 loss | — | 0.517 | Sobolev signal for elliptic PDE (fno-explained.pdf §5.1) |
-| + dual-metric reporting | **0.401** | 0.596 | discovered `LpLoss` per-sample-mean ≠ dissertation's flattened global metric; the model was already at parity, the metric definition wasn't |
-
-The two metrics disagree because val targets `||y_i||₂` span
-~p5=1.55 to p95=21.1; the per-sample mean weights every sample
-equally so the bottom-percentile drags it up, while the global metric
-weights by `||y_i||₂` and tracks the bulk. Both numbers are useful;
-only the global one is directly comparable to the dissertation's
-Table 1.
-
-Held-out PDE example (seed=999, freshly generated, never in train/test
-since the seed sequence is per-split):
-
-    rel L2 = 0.098,  mean |err| = 0.044
+on the val set.
 
 ![inference example](runs/square_32/inference_demo.png)
 
@@ -364,18 +388,13 @@ uv run python scripts/plot_training_curve.py slurm/logs/neuropaths-train-<jobid>
 uv run python scripts/inference_demo.py --config configs/square_32.yaml
 ```
 
-Open follow-ups (not blockers for the baseline):
+TODO
 
-- **Zero-shot super-resolution table is wired up** — see
-  `scripts/super_resolution_eval.py` and
-  `slurm/super_resolution_eval.slurm`. Run it on Avon to fill in the
-  s=32, s'∈{16, 32, 63} row of dissertation Table 1.
 - Curved-domain experiment (`configs/curved_32.yaml`) needs the
   `f^{-1}` channel at inference and an `inverse_map` smoke test.
 - Architectural knobs the fno-explained.pdf audit flagged that we did
   not enable: anisotropic modes `(8, 12)`, `norm="instance_norm"`,
-  `channel_mlp_dropout`. Likely small further wins; uncertain how much
-  they buy on top of the global metric.
+  `channel_mlp_dropout`.
 - Port `neuropaths-evaluate` so this table can be regenerated from a
   saved checkpoint without `_final_eval` being inlined in the trainer.
 
